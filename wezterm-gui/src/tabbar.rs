@@ -587,7 +587,7 @@ impl TabBarState {
             let tab_start_idx = x;
 
             let esc = format_as_escapes(tab_title.items.clone()).expect("already parsed ok above");
-            let mut tab_line = parse_status_text(
+            let tab_line = parse_status_text(
                 &esc,
                 if config.use_fancy_tab_bar {
                     CellAttributes::default()

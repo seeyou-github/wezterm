@@ -495,7 +495,6 @@ impl TermWindow {
                 let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
                     Some(tab) => tab,
                     None => {
-                        save_window_close_session();
                         mux.kill_window(self.mux_window_id);
                         window.close();
                         front_end().forget_known_window(window);
@@ -509,7 +508,6 @@ impl TermWindow {
                     .get_window(mux_window_id)
                     .map_or(false, |w| w.can_close_without_prompting());
                 if can_close {
-                    save_window_close_session();
                     mux.kill_window(self.mux_window_id);
                     window.close();
                     front_end().forget_known_window(window);

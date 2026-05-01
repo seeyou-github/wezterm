@@ -484,19 +484,8 @@ impl TermWindow {
 
     fn close_requested(&mut self, window: &Window) {
         let mux = Mux::get();
-        let save_window_close_session = || {
-            let result = if mux.iter_windows().len() > 1 {
-                crate::persisted_state::save_current_session_excluding_window(self.mux_window_id)
-            } else {
-                crate::persisted_state::save_current_session()
-            };
-            if let Err(err) = result {
-                log::warn!("failed to save renamed tab session before close: {err:#}");
-            }
-        };
         match self.config.window_close_confirmation {
             WindowCloseConfirmation::NeverPrompt => {
-                save_window_close_session();
                 // Immediately kill the tabs and allow the window to close
                 mux.kill_window(self.mux_window_id);
                 window.close();
@@ -2893,9 +2882,6 @@ impl TermWindow {
 
                 match config.window_close_confirmation {
                     WindowCloseConfirmation::NeverPrompt => {
-                        if let Err(err) = crate::persisted_state::save_current_session() {
-                            log::warn!("failed to save renamed tab session before quit: {err:#}");
-                        }
                         let con = Connection::get().expect("call on gui thread");
                         con.terminate_message_loop();
                     }
@@ -3380,9 +3366,6 @@ impl TermWindow {
                     }
                 }
             }
-            if let Err(err) = crate::persisted_state::save_current_session() {
-                log::warn!("failed to save renamed tab session after tab close: {err:#}");
-            }
         }
     }
 
@@ -3423,9 +3406,6 @@ impl TermWindow {
                         window.set_active_without_saving(target_idx.min(len - 1));
                     }
                 }
-            }
-            if let Err(err) = crate::persisted_state::save_current_session() {
-                log::warn!("failed to save renamed tab session after tab close: {err:#}");
             }
         }
     }

@@ -17,12 +17,6 @@ use std::sync::Arc;
 use wezterm_term::{Alert, ClipboardSelection};
 use wezterm_toast_notification::*;
 
-fn save_session_snapshot() {
-    if let Err(err) = crate::persisted_state::save_current_session() {
-        log::warn!("failed to save renamed tab session: {err:#}");
-    }
-}
-
 pub struct GuiFrontEnd {
     connection: Rc<Connection>,
     switching_workspaces: RefCell<bool>,
@@ -83,7 +77,6 @@ impl GuiFrontEnd {
                     .detach();
                 }
                 MuxNotification::WindowCreated(_) => {
-                    save_session_snapshot();
                     promise::spawn::spawn_into_main_thread(async move {
                         let fe = crate::frontend::front_end();
                         if !fe.is_switching_workspace() {
@@ -101,14 +94,10 @@ impl GuiFrontEnd {
                     })
                     .detach();
                 }
-                MuxNotification::TabTitleChanged { .. } => {
-                    save_session_snapshot();
-                }
+                MuxNotification::TabTitleChanged { .. } => {}
                 MuxNotification::WindowTitleChanged { .. } => {}
                 MuxNotification::TabResized(_) => {}
-                MuxNotification::TabAddedToWindow { .. } => {
-                    save_session_snapshot();
-                }
+                MuxNotification::TabAddedToWindow { .. } => {}
                 MuxNotification::PaneRemoved(_) => {}
                 MuxNotification::WindowInvalidated(_) => {}
                 MuxNotification::PaneOutput(_) => {}

@@ -2,6 +2,9 @@ use crate::termwindow::{PaneInformation, TabInformation, UIItem, UIItemType};
 use config::{ConfigHandle, TabBarColors};
 use finl_unicode::grapheme_clusters::Graphemes;
 use mlua::FromLua;
+use mux::pane::CachePolicy;
+use mux::Mux;
+use std::path::Path;
 use termwiz::cell::{unicode_column_width, Cell, CellAttributes};
 use termwiz::color::{AnsiColor, ColorSpec};
 use termwiz::escape::csi::Sgr;
@@ -9,6 +12,7 @@ use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode, CSI};
 use termwiz::surface::SEQ_ZERO;
 use termwiz_funcs::{format_as_escapes, FormatColor, FormatItem};
+use url::Url;
 use wezterm_term::{Line, Progress};
 use window::{IntegratedTitleButton, IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle};
 
@@ -152,11 +156,7 @@ fn compute_tab_title(
             let mut len = 0;
 
             if let Some(pane) = &tab.active_pane {
-                let mut title = if tab.tab_title.is_empty() {
-                    pane.title.clone()
-                } else {
-                    tab.tab_title.clone()
-                };
+                let mut title = default_tab_title(tab, pane);
 
                 let classic_spacing = if config.use_fancy_tab_bar { "" } else { " " };
                 if config.show_tab_index_in_tab_bar {
@@ -215,6 +215,79 @@ fn compute_tab_title(
             TitleText { len, items }
         }
     }
+}
+
+fn default_tab_title(tab: &TabInformation, pane: &PaneInformation) -> String {
+    if !tab.tab_title.is_empty() {
+        return tab.tab_title.clone();
+    }
+
+    if let Some(title) = tab_cwd_label(tab, pane) {
+        return title;
+    }
+
+    sanitize_fallback_title(&pane.title)
+}
+
+fn tab_cwd_label(tab: &TabInformation, pane: &PaneInformation) -> Option<String> {
+    let mux = Mux::try_get()?;
+
+    if let Some(pane) = mux.get_pane(pane.pane_id) {
+        if let Some(url) = pane.get_current_working_dir(CachePolicy::AllowStale) {
+            if let Some(label) = cwd_label_from_url(&url) {
+                return Some(label);
+            }
+        }
+    }
+
+    mux.get_tab(tab.tab_id)
+        .and_then(|tab| tab.get_spawn_cwd())
+        .and_then(cwd_label_from_path)
+}
+
+fn cwd_label_from_url(url: &Url) -> Option<String> {
+    if url.scheme() != "file" {
+        return None;
+    }
+
+    url.to_file_path()
+        .ok()
+        .and_then(cwd_label_from_path)
+}
+
+fn cwd_label_from_path<P: AsRef<Path>>(path: P) -> Option<String> {
+    let path = path.as_ref();
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let display = path.display().to_string();
+            if display.is_empty() {
+                None
+            } else {
+                Some(display)
+            }
+        })
+}
+
+fn sanitize_fallback_title(title: &str) -> String {
+    let path = Path::new(title);
+    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        return strip_shell_extension(name).unwrap_or(name).to_string();
+    }
+
+    strip_shell_extension(title).unwrap_or(title).to_string()
+}
+
+fn strip_shell_extension(title: &str) -> Option<&str> {
+    let lower = title.to_ascii_lowercase();
+    for suffix in [".exe", ".cmd", ".bat", ".com"] {
+        if lower.ends_with(suffix) {
+            return title.get(..title.len().saturating_sub(suffix.len()));
+        }
+    }
+    None
 }
 
 fn is_tab_hover(mouse_x: Option<usize>, x: usize, tab_title_len: usize) -> bool {

@@ -63,9 +63,6 @@ pub fn confirm_close_tab(
                     }
                 }
             }
-            if let Err(err) = crate::persisted_state::save_current_session() {
-                log::warn!("failed to save renamed tab session after tab close: {err:#}");
-            }
         })
         .detach();
     }
@@ -86,14 +83,6 @@ pub fn confirm_close_window(
     )? {
         promise::spawn::spawn_into_main_thread(async move {
             let mux = Mux::get();
-            let result = if mux.iter_windows().len() > 1 {
-                crate::persisted_state::save_current_session_excluding_window(mux_window_id)
-            } else {
-                crate::persisted_state::save_current_session()
-            };
-            if let Err(err) = result {
-                log::warn!("failed to save renamed tab session before close: {err:#}");
-            }
             mux.kill_window(mux_window_id);
         })
         .detach();
@@ -110,9 +99,6 @@ pub fn confirm_quit_program(
 ) -> anyhow::Result<()> {
     if confirm::run_confirmation("🛑 Really Quit WezTerm?", &mut term)? {
         promise::spawn::spawn_into_main_thread(async move {
-            if let Err(err) = crate::persisted_state::save_current_session() {
-                log::warn!("failed to save renamed tab session before quit: {err:#}");
-            }
             use ::window::{Connection, ConnectionOps};
             let con = Connection::get().expect("call on gui thread");
             con.terminate_message_loop();

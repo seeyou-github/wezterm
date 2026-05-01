@@ -345,7 +345,6 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
     is_connecting: bool,
     domain: Option<Arc<dyn Domain>>,
     workspace: Option<String>,
-    allow_restore_session: bool,
 ) -> anyhow::Result<()> {
     let mux = Mux::get();
 
@@ -368,38 +367,6 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
         .detach();
         true
     });
-
-    if allow_restore_session && domain.domain_name() == "local" {
-        if let Some(session) = persisted_state::load_saved_session().unwrap_or_else(|err| {
-            log::warn!("failed to load saved renamed tabs session: {err:#}");
-            None
-        }) {
-            if !session.windows.is_empty() {
-                let dpi = config.dpi.unwrap_or_else(|| ::window::default_dpi());
-                let size = config.initial_size(dpi as u32, Some(cell_pixel_dims(&config, dpi)?));
-
-                for saved_window in session.windows {
-                    if saved_window.tabs.is_empty() {
-                        continue;
-                    }
-
-                    let window_id = *mux.new_empty_window(workspace.clone(), None);
-                    domain.attach(Some(window_id)).await?;
-
-                    for saved_tab in saved_window.tabs {
-                        let tab = domain
-                            .spawn(size, None, saved_tab.cwd.clone(), window_id)
-                            .await?;
-                        tab.set_title(&saved_tab.title);
-                        tab.set_spawn_cwd(saved_tab.cwd.clone());
-                    }
-                }
-
-                trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
-                return Ok(());
-            }
-        }
-    }
 
     let window_id = {
         // Force the builder to notify the frontend early,
@@ -603,14 +570,11 @@ async fn async_run_terminal_gui(
             trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
         }
     }
-    let allow_restore_session =
-        cmd.is_none() && !opts.attach && opts.domain.is_none() && opts.workspace.is_none();
     spawn_tab_in_domain_if_mux_is_empty(
         cmd,
         is_connecting,
         domain,
         opts.workspace,
-        allow_restore_session,
     )
     .await
 }

@@ -22,7 +22,9 @@ use std::env::current_dir;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::thread::JoinHandle;
 use termwiz::cell::CellAttributes;
 use termwiz::surface::{Line, SEQ_ZERO};
 use unicode_normalization::UnicodeNormalization;
@@ -33,6 +35,7 @@ use wezterm_font::FontConfiguration;
 use wezterm_gui_subcommands::*;
 use wezterm_mux_server_impl::update_mux_domains;
 use wezterm_toast_notification::*;
+use wezterm_uds::UnixStream;
 
 mod colorease;
 mod commands;
@@ -42,6 +45,7 @@ mod frontend;
 mod glyphcache;
 mod inputmap;
 mod overlay;
+mod persisted_state;
 mod quad;
 mod renderstate;
 mod resize_increment_calculator;
@@ -64,6 +68,61 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 pub use selection::SelectionMode;
 pub use termwindow::{set_window_class, set_window_position, TermWindow, ICON_DATA};
+
+struct GuiSockServer {
+    shutdown: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+    path: PathBuf,
+}
+
+impl GuiSockServer {
+    fn shutdown(mut self) {
+        self.shutdown.store(true, Ordering::Release);
+
+        if let Err(err) = UnixStream::connect(&self.path) {
+            log::trace!(
+                "while waking gui socket listener {}: {err:#}",
+                self.path.display()
+            );
+        }
+
+        if let Some(thread) = self.thread.take() {
+            if let Err(err) = thread.join() {
+                log::warn!("gui socket listener thread panicked: {:?}", err);
+            }
+        }
+
+        std::fs::remove_file(&self.path).ok();
+    }
+}
+
+static GUI_SOCK_SERVER: LazyLock<Mutex<Option<GuiSockServer>>> = LazyLock::new(|| Mutex::new(None));
+
+fn register_gui_sock_server(server: GuiSockServer) {
+    let existing = {
+        let mut guard = GUI_SOCK_SERVER
+            .lock()
+            .expect("gui socket server mutex poisoned");
+        let existing = guard.take();
+        guard.replace(server);
+        existing
+    };
+
+    if let Some(existing) = existing {
+        existing.shutdown();
+    }
+}
+
+fn shutdown_gui_sock_server() {
+    let server = GUI_SOCK_SERVER
+        .lock()
+        .expect("gui socket server mutex poisoned")
+        .take();
+
+    if let Some(server) = server {
+        server.shutdown();
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -286,14 +345,59 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
     is_connecting: bool,
     domain: Option<Arc<dyn Domain>>,
     workspace: Option<String>,
+    allow_restore_session: bool,
 ) -> anyhow::Result<()> {
     let mux = Mux::get();
 
     let domain = domain.unwrap_or_else(|| mux.default_domain());
+    let config = config::configuration();
+    config.update_ulimit()?;
 
     if !is_connecting {
         if have_panes_in_domain_and_ws(&domain, &workspace) {
             return Ok(());
+        }
+    }
+
+    let _config_subscription = config::subscribe_to_config_reload(move || {
+        promise::spawn::spawn_into_main_thread(async move {
+            if let Err(err) = update_mux_domains(&config::configuration()) {
+                log::error!("Error updating mux domains: {:#}", err);
+            }
+        })
+        .detach();
+        true
+    });
+
+    if allow_restore_session && domain.domain_name() == "local" {
+        if let Some(session) = persisted_state::load_saved_session().unwrap_or_else(|err| {
+            log::warn!("failed to load saved renamed tabs session: {err:#}");
+            None
+        }) {
+            if !session.windows.is_empty() {
+                let dpi = config.dpi.unwrap_or_else(|| ::window::default_dpi());
+                let size = config.initial_size(dpi as u32, Some(cell_pixel_dims(&config, dpi)?));
+
+                for saved_window in session.windows {
+                    if saved_window.tabs.is_empty() {
+                        continue;
+                    }
+
+                    let window_id = *mux.new_empty_window(workspace.clone(), None);
+                    domain.attach(Some(window_id)).await?;
+
+                    for saved_tab in saved_window.tabs {
+                        let tab = domain
+                            .spawn(size, None, saved_tab.cwd.clone(), window_id)
+                            .await?;
+                        tab.set_title(&saved_tab.title);
+                        tab.set_spawn_cwd(saved_tab.cwd.clone());
+                    }
+                }
+
+                trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
+                return Ok(());
+            }
         }
     }
 
@@ -310,9 +414,6 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
         *builder
     };
 
-    let config = config::configuration();
-    config.update_ulimit()?;
-
     domain.attach(Some(window_id)).await?;
 
     if have_panes_in_domain_and_ws(&domain, &workspace) {
@@ -320,18 +421,14 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
         return Ok(());
     }
 
-    let _config_subscription = config::subscribe_to_config_reload(move || {
-        promise::spawn::spawn_into_main_thread(async move {
-            if let Err(err) = update_mux_domains(&config::configuration()) {
-                log::error!("Error updating mux domains: {:#}", err);
-            }
-        })
-        .detach();
-        true
-    });
-
     let dpi = config.dpi.unwrap_or_else(|| ::window::default_dpi());
-    let _tab = domain
+    let startup_cwd = cmd
+        .as_ref()
+        .and_then(|cmd| cmd.get_cwd())
+        .map(|cwd| PathBuf::from(cwd.clone()))
+        .or_else(|| std::env::current_dir().ok())
+        .and_then(|path| persisted_state::effective_spawn_cwd(Some(&path)));
+    let tab = domain
         .spawn(
             config.initial_size(dpi as u32, Some(cell_pixel_dims(&config, dpi)?)),
             cmd,
@@ -339,6 +436,7 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
             window_id,
         )
         .await?;
+    tab.set_spawn_cwd(startup_cwd);
     trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
     Ok(())
 }
@@ -410,12 +508,21 @@ async fn async_run_terminal_gui(
     opts: StartCommand,
     should_publish: bool,
 ) -> anyhow::Result<()> {
+    if let Err(err) = persisted_state::cleanup_prior_runtime_artifacts() {
+        log::warn!("failed to clean prior runtime artifacts: {err:#}");
+    }
     let unix_socket_path =
-        config::RUNTIME_DIR.join(format!("gui-sock-{}", unsafe { libc::getpid() }));
+        wezterm_client::discovery::gui_sock_path_for_pid(unsafe { libc::getpid() as u32 });
     std::env::set_var("WEZTERM_UNIX_SOCKET", unix_socket_path.clone());
-    wezterm_blob_leases::register_storage(Arc::new(
-        wezterm_blob_leases::simple_tempdir::SimpleTempDir::new_in(&*config::CACHE_DIR)?,
-    ))?;
+    let blob_storage = Arc::new(wezterm_blob_leases::simple_tempdir::SimpleTempDir::new_in(
+        &*config::CACHE_DIR,
+    )?);
+    let blob_root = blob_storage.root_path().to_path_buf();
+    wezterm_blob_leases::register_storage(blob_storage)?;
+    if let Err(err) = persisted_state::save_runtime_artifacts(&[unix_socket_path.clone(), blob_root])
+    {
+        log::warn!("failed to save runtime artifacts metadata: {err:#}");
+    }
     if let Err(err) = spawn_mux_server(unix_socket_path, should_publish) {
         log::warn!("{:#}", err);
     }
@@ -480,6 +587,13 @@ async fn async_run_terminal_gui(
                     window_id,
                 )
                 .await?;
+            let startup_cwd = cmd
+                .as_ref()
+                .and_then(|cmd| cmd.get_cwd())
+                .map(|cwd| PathBuf::from(cwd.clone()))
+                .or_else(|| std::env::current_dir().ok())
+                .and_then(|path| persisted_state::effective_spawn_cwd(Some(&path)));
+            tab.set_spawn_cwd(startup_cwd);
             let mut window = mux
                 .get_window_mut(window_id)
                 .ok_or_else(|| anyhow!("failed to get mux window id {window_id}"))?;
@@ -489,7 +603,16 @@ async fn async_run_terminal_gui(
             trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
         }
     }
-    spawn_tab_in_domain_if_mux_is_empty(cmd, is_connecting, domain, opts.workspace).await
+    let allow_restore_session =
+        cmd.is_none() && !opts.attach && opts.domain.is_none() && opts.workspace.is_none();
+    spawn_tab_in_domain_if_mux_is_empty(
+        cmd,
+        is_connecting,
+        domain,
+        opts.workspace,
+        allow_restore_session,
+    )
+    .await
 }
 
 #[derive(Debug)]
@@ -654,20 +777,36 @@ fn spawn_mux_server(unix_socket_path: PathBuf, should_publish: bool) -> anyhow::
             socket_path: Some(unix_socket_path.clone()),
             ..Default::default()
         })?;
-    std::thread::spawn(move || {
-        let name_holder;
-        if should_publish {
-            name_holder = wezterm_client::discovery::publish_gui_sock_path(
-                &unix_socket_path,
-                &crate::termwindow::get_window_class(),
-            );
-            if let Err(err) = &name_holder {
-                log::warn!("{:#}", err);
-            }
-        }
 
-        listener.run();
-        std::fs::remove_file(unix_socket_path).ok();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let thread_shutdown = Arc::clone(&shutdown);
+    let thread_path = unix_socket_path.clone();
+
+    let thread = std::thread::spawn(move || {
+        let _name_holder = if should_publish {
+            match wezterm_client::discovery::publish_gui_sock_path(
+                &thread_path,
+                &crate::termwindow::get_window_class(),
+            ) {
+                Ok(holder) => Some(holder),
+                Err(err) => {
+                    log::warn!("{:#}", err);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        listener.run_with_shutdown(&thread_shutdown);
+        drop(listener);
+        std::fs::remove_file(&thread_path).ok();
+    });
+
+    register_gui_sock_server(GuiSockServer {
+        shutdown,
+        thread: Some(thread),
+        path: unix_socket_path,
     });
 
     Ok(())
@@ -691,7 +830,6 @@ fn setup_mux(
             .unwrap_or(mux::DEFAULT_WORKSPACE),
     );
     mux.set_active_workspace(&default_workspace_name);
-    crate::update::load_last_release_info_and_set_banner();
     update_mux_domains(config)?;
 
     let default_name =
@@ -811,6 +949,7 @@ fn notify_on_panic() {
 fn terminate_with_error_message(err: &str) -> ! {
     log::error!("{}; terminating", err);
     fatal_toast_notification("Wezterm Error", &err);
+    shutdown_gui_sock_server();
     std::process::exit(1);
 }
 
@@ -836,6 +975,7 @@ fn main() {
     if let Err(e) = run() {
         terminate_with_error(e);
     }
+    shutdown_gui_sock_server();
     Mux::shutdown();
     frontend::shutdown();
 }

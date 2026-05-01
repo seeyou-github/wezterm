@@ -452,10 +452,14 @@ impl ComputedElement {
 
     fn ui_item_impl(&self, items: &mut Vec<UIItem>) {
         if let Some(item_type) = &self.item_type {
+            let left = self.bounds.min_x();
+            let right = self.bounds.max_x();
+            let clipped_left = left.max(0.);
+            let clipped_right = right.max(0.);
             items.push(UIItem {
-                x: self.bounds.min_x().max(0.) as usize,
+                x: clipped_left as usize,
                 y: self.bounds.min_y().max(0.) as usize,
-                width: self.bounds.width().max(0.) as usize,
+                width: (clipped_right - clipped_left).max(0.) as usize,
                 height: self.bounds.height().max(0.) as usize,
                 item_type: item_type.clone(),
             });
@@ -620,7 +624,7 @@ impl super::TermWindow {
                         .next()
                         .ok_or_else(|| anyhow!("info.cluster didn't map into string"))?;
                     if let Some(key) = BlockKey::from_str(grapheme) {
-                        if pixel_width + context.width.pixel_cell >= max_x {
+                        if pixel_width + context.width.pixel_cell > max_x {
                             break;
                         }
                         pixel_width += context.width.pixel_cell;
@@ -643,10 +647,10 @@ impl super::TermWindow {
                         if let Some(texture) = glyph.texture.as_ref() {
                             let x_pos = x_pos + (glyph.x_offset + glyph.bearing_x).get() as f32;
                             let width = texture.coords.size.width as f32 * glyph.scale as f32;
-                            if x_pos + width >= max_x {
+                            if x_pos + width > max_x {
                                 break;
                             }
-                        } else if x_pos + glyph.x_advance.get() as f32 >= max_x {
+                        } else if x_pos + glyph.x_advance.get() as f32 > max_x {
                             break;
                         }
 

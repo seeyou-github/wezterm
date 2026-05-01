@@ -35,6 +35,7 @@ impl crate::TermWindow {
             tab_bar_y as usize,
             self.render_metrics.cell_size.height as usize,
             self.render_metrics.cell_size.width as usize,
+            self.dimensions.pixel_width / self.render_metrics.cell_size.width as usize,
         ));
 
         let window_is_transparent =
@@ -54,7 +55,9 @@ impl crate::TermWindow {
         self.render_screen_line(
             RenderScreenLineParams {
                 top_pixel_y: tab_bar_y,
-                left_pixel_x: 0.,
+                left_pixel_x: -((self.tab_bar.scroll_offset()
+                    * self.render_metrics.cell_size.width as usize)
+                    as f32),
                 pixel_width: self.dimensions.pixel_width as f32,
                 stable_line_idx: None,
                 line: self.tab_bar.line(),

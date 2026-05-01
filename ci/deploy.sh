@@ -111,8 +111,12 @@ case $OSTYPE in
     fi
     rm -rf $zipdir $zipname
     mkdir $zipdir
+    mux_server_bin=
+    if [[ -f $TARGET_DIR/release/wezterm-mux-server.exe ]] ; then
+      mux_server_bin="$TARGET_DIR/release/wezterm-mux-server.exe"
+    fi
     cp $TARGET_DIR/release/wezterm.exe \
-      $TARGET_DIR/release/wezterm-mux-server.exe \
+      $mux_server_bin \
       $TARGET_DIR/release/wezterm-gui.exe \
       $TARGET_DIR/release/strip-ansi-escapes.exe \
       $TARGET_DIR/release/wezterm.pdb \
@@ -125,7 +129,9 @@ case $OSTYPE in
     cp $TARGET_DIR/release/mesa/opengl32.dll \
         $zipdir/mesa
     7z a -tzip $zipname $zipdir
-    iscc.exe -DMyAppVersion=${TAG_NAME#nightly} -F${instname} ci/windows-installer.iss
+    if [[ "${WEZTERM_SKIP_INSTALLER:-0}" != "1" ]] ; then
+      iscc.exe -DMyAppVersion=${TAG_NAME#nightly} -F${instname} ci/windows-installer.iss
+    fi
     ;;
   linux-gnu|linux)
     distro=$(lsb_release -is 2>/dev/null || sh -c "source /etc/os-release && echo \$NAME")

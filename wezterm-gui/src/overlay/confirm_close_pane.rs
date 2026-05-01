@@ -31,7 +31,7 @@ pub fn confirm_close_pane(
 pub fn confirm_close_tab(
     tab_id: TabId,
     mut term: TermWizTerminal,
-    _mux_window_id: WindowId,
+    mux_window_id: WindowId,
     window: ::window::Window,
 ) -> anyhow::Result<()> {
     if confirm::run_confirmation(
@@ -40,7 +40,32 @@ pub fn confirm_close_tab(
     )? {
         promise::spawn::spawn_into_main_thread(async move {
             let mux = Mux::get();
+            let next_active_idx = mux.get_window(mux_window_id).and_then(|window| {
+                let idx = window.idx_by_id(tab_id)?;
+                let active_idx = window.get_active_idx();
+                let len = window.len();
+                if idx != active_idx || len <= 1 {
+                    None
+                } else {
+                    Some(if active_idx + 1 < len {
+                        active_idx
+                    } else {
+                        active_idx.saturating_sub(1)
+                    })
+                }
+            });
             mux.remove_tab(tab_id);
+            if let Some(target_idx) = next_active_idx {
+                if let Some(mut window) = mux.get_window_mut(mux_window_id) {
+                    if !window.is_empty() {
+                        let len = window.len();
+                        window.set_active_without_saving(target_idx.min(len - 1));
+                    }
+                }
+            }
+            if let Err(err) = crate::persisted_state::save_current_session() {
+                log::warn!("failed to save renamed tab session after tab close: {err:#}");
+            }
         })
         .detach();
     }
@@ -61,6 +86,14 @@ pub fn confirm_close_window(
     )? {
         promise::spawn::spawn_into_main_thread(async move {
             let mux = Mux::get();
+            let result = if mux.iter_windows().len() > 1 {
+                crate::persisted_state::save_current_session_excluding_window(mux_window_id)
+            } else {
+                crate::persisted_state::save_current_session()
+            };
+            if let Err(err) = result {
+                log::warn!("failed to save renamed tab session before close: {err:#}");
+            }
             mux.kill_window(mux_window_id);
         })
         .detach();
@@ -77,6 +110,9 @@ pub fn confirm_quit_program(
 ) -> anyhow::Result<()> {
     if confirm::run_confirmation("🛑 Really Quit WezTerm?", &mut term)? {
         promise::spawn::spawn_into_main_thread(async move {
+            if let Err(err) = crate::persisted_state::save_current_session() {
+                log::warn!("failed to save renamed tab session before quit: {err:#}");
+            }
             use ::window::{Connection, ConnectionOps};
             let con = Connection::get().expect("call on gui thread");
             con.terminate_message_loop();

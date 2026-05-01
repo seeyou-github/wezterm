@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ffi::OsString;
-use std::io::{self, Error as IoError};
+use std::io::Error as IoError;
 use std::num::NonZeroIsize;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
@@ -49,8 +49,6 @@ use winapi::um::winnt::OSVERSIONINFOW;
 use winapi::um::winuser::*;
 use windows::UI::Color as WUIColor;
 use windows::UI::ViewManagement::{UIColorType, UISettings};
-use winreg::enums::HKEY_CURRENT_USER;
-use winreg::RegKey;
 
 const GCS_RESULTSTR: DWORD = 0x800;
 const GCS_COMPSTR: DWORD = 0x8;
@@ -957,6 +955,21 @@ impl WindowOps for Window {
         });
     }
 
+    fn get_ime_open_status(&self) -> Future<Option<bool>> {
+        Connection::with_window_inner(self.0, move |inner| {
+            let imc = ImmContext::get(inner.hwnd.0);
+            Ok(Some(imc.get_open_status()))
+        })
+    }
+
+    fn set_ime_open_status(&self, open: bool) -> Future<()> {
+        Connection::with_window_inner(self.0, move |inner| {
+            let imc = ImmContext::get(inner.hwnd.0);
+            imc.set_open_status(open);
+            Ok(())
+        })
+    }
+
     fn get_clipboard(&self, _clipboard: Clipboard) -> Future<String> {
         Future::result(
             clipboard_win::get_clipboard_string()
@@ -988,10 +1001,7 @@ impl WindowOps for Window {
         let has_focus = unsafe { GetFocus() } == hwnd;
         let is_full_screen = window_state.contains(WindowState::FULL_SCREEN);
 
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let use_accent = hkcu
-            .open_subkey("SOFTWARE\\Microsoft\\Windows\\DWM")?
-            .get_value::<u32, _>("ColorPrevalence")?;
+        let use_accent = super::config_file::get_u32("ColorPrevalence", 0);
         let settings = UISettings::new()?;
         let top_border_color = if has_focus {
             if use_accent == 1 {
@@ -1895,16 +1905,8 @@ unsafe fn mouse_leave(hwnd: HWND, _msg: UINT, _wparam: WPARAM, _lparam: LPARAM) 
 }
 
 lazy_static! {
-    static ref WHEEL_SCROLL_LINES: i16 = read_scroll_speed("WheelScrollLines").unwrap_or(3);
-    static ref WHEEL_SCROLL_CHARS: i16 = read_scroll_speed("WheelScrollChars").unwrap_or(3);
-}
-
-fn read_scroll_speed(name: &str) -> io::Result<i16> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let desktop = hkcu.open_subkey("Control Panel\\Desktop")?;
-    desktop
-        .get_value::<String, _>(name)
-        .and_then(|v| v.parse().map_err(|_| io::ErrorKind::InvalidData.into()))
+    static ref WHEEL_SCROLL_LINES: i16 = super::config_file::get_i16("WheelScrollLines", 3);
+    static ref WHEEL_SCROLL_CHARS: i16 = super::config_file::get_i16("WheelScrollChars", 3);
 }
 
 unsafe fn mouse_wheel(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
@@ -2050,6 +2052,16 @@ impl ImmContext {
             OsString::from_wide(&wide_buf).into_string()
         } else {
             Ok(String::new())
+        }
+    }
+
+    pub fn get_open_status(&self) -> bool {
+        unsafe { ImmGetOpenStatus(self.imc) != 0 }
+    }
+
+    pub fn set_open_status(&self, open: bool) {
+        unsafe {
+            ImmSetOpenStatus(self.imc, if open { 1 } else { 0 });
         }
     }
 }

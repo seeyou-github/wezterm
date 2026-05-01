@@ -40,6 +40,7 @@ impl super::TermWindow {
                 self.update_title_post_status();
             }
             UIItemType::CloseTab(_)
+            | UIItemType::CloseCurrentTab
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
             | UIItemType::ScrollThumb
@@ -51,6 +52,7 @@ impl super::TermWindow {
         match item.item_type {
             UIItemType::TabBar(_) => {}
             UIItemType::CloseTab(_)
+            | UIItemType::CloseCurrentTab
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
             | UIItemType::ScrollThumb
@@ -129,9 +131,11 @@ impl super::TermWindow {
                     // Completed a window drag
                     return;
                 }
-                if press == &MousePress::Left && self.dragging.take().is_some() {
-                    // Completed a drag
-                    return;
+                if press == &MousePress::Left {
+                    if self.dragging.take().is_some() {
+                        // Completed a drag
+                        return;
+                    }
                 }
             }
 
@@ -348,10 +352,59 @@ impl super::TermWindow {
             UIItemType::ScrollThumb => {
                 self.drag_scroll_thumb(item, start_event, event, context);
             }
+            UIItemType::TabBar(TabBarItem::Tab { .. }) => {
+                self.drag_tab(item, start_event, event, context);
+            }
             _ => {
                 log::error!("drag not implemented for {:?}", item);
             }
         }
+    }
+
+    fn drag_tab(
+        &mut self,
+        mut item: UIItem,
+        start_event: MouseEvent,
+        event: MouseEvent,
+        context: &dyn WindowOps,
+    ) {
+        if (event.coords.x - start_event.coords.x).abs()
+            < self.render_metrics.cell_size.width as isize
+        {
+            self.dragging.replace((item, start_event));
+            return;
+        }
+
+        let target = self.resolve_ui_item(&event);
+        if let Some(UIItem {
+            item_type:
+                UIItemType::TabBar(TabBarItem::Tab {
+                    tab_idx,
+                    active,
+                    renamed,
+                }),
+            ..
+        }) = target
+        {
+            if let UIItemType::TabBar(TabBarItem::Tab {
+                tab_idx: dragged_idx,
+                ..
+            }) = item.item_type.clone()
+            {
+                if dragged_idx != tab_idx {
+                    if self.move_tab(tab_idx).is_ok() {
+                        item.item_type = UIItemType::TabBar(TabBarItem::Tab {
+                            tab_idx,
+                            active,
+                            renamed,
+                        });
+                        context.invalidate();
+                    }
+                }
+            }
+        }
+
+        self.dragging.replace((item, start_event));
     }
 
     fn mouse_event_ui_item(
@@ -363,9 +416,10 @@ impl super::TermWindow {
         context: &dyn WindowOps,
     ) {
         self.last_ui_item.replace(item.clone());
-        match item.item_type {
-            UIItemType::TabBar(item) => {
-                self.mouse_event_tab_bar(item, event, context);
+        let ui_item = item.clone();
+        match item.item_type.clone() {
+            UIItemType::TabBar(tab_item) => {
+                self.mouse_event_tab_bar(tab_item, event, context, ui_item);
             }
             UIItemType::AboveScrollThumb => {
                 self.mouse_event_above_scroll_thumb(item, pane, event, context);
@@ -382,6 +436,9 @@ impl super::TermWindow {
             UIItemType::CloseTab(idx) => {
                 self.mouse_event_close_tab(idx, event, context);
             }
+            UIItemType::CloseCurrentTab => {
+                self.mouse_event_close_current_tab(event, context);
+            }
         }
     }
 
@@ -397,6 +454,17 @@ impl super::TermWindow {
                 self.close_specific_tab(idx, true);
             }
             _ => {}
+        }
+        context.set_cursor(Some(MouseCursor::Arrow));
+    }
+
+    pub fn mouse_event_close_current_tab(
+        &mut self,
+        event: MouseEvent,
+        context: &dyn WindowOps,
+    ) {
+        if event.kind == WMEK::Press(MousePress::Left) {
+            self.close_current_tab(true);
         }
         context.set_cursor(Some(MouseCursor::Arrow));
     }
@@ -458,13 +526,15 @@ impl super::TermWindow {
         item: TabBarItem,
         event: MouseEvent,
         context: &dyn WindowOps,
+        ui_item: UIItem,
     ) {
         match event.kind {
             WMEK::Press(MousePress::Left) => match item {
                 TabBarItem::Tab { tab_idx, .. } => {
                     self.activate_tab(tab_idx as isize).ok();
+                    self.dragging.replace((ui_item, event));
                 }
-                TabBarItem::NewTabButton { .. } => {
+                TabBarItem::NewTabButton => {
                     self.do_new_tab_button_click(MousePress::Left);
                 }
                 TabBarItem::None | TabBarItem::LeftStatus | TabBarItem::RightStatus => {
@@ -514,7 +584,7 @@ impl super::TermWindow {
                 TabBarItem::Tab { tab_idx, .. } => {
                     self.close_specific_tab(tab_idx, true);
                 }
-                TabBarItem::NewTabButton { .. } => {
+                TabBarItem::NewTabButton => {
                     self.do_new_tab_button_click(MousePress::Middle);
                 }
                 TabBarItem::None
@@ -523,10 +593,11 @@ impl super::TermWindow {
                 | TabBarItem::WindowButton(_) => {}
             },
             WMEK::Press(MousePress::Right) => match item {
-                TabBarItem::Tab { .. } => {
-                    self.show_tab_navigator();
+                TabBarItem::Tab { tab_idx, .. } => {
+                    self.activate_tab(tab_idx as isize).ok();
+                    self.show_tab_context_menu(tab_idx);
                 }
-                TabBarItem::NewTabButton { .. } => {
+                TabBarItem::NewTabButton => {
                     self.do_new_tab_button_click(MousePress::Right);
                 }
                 TabBarItem::None
@@ -550,10 +621,43 @@ impl super::TermWindow {
                 }
                 TabBarItem::WindowButton(_)
                 | TabBarItem::Tab { .. }
-                | TabBarItem::NewTabButton { .. } => {}
+                | TabBarItem::NewTabButton => {}
             },
             WMEK::VertWheel(n) => {
-                if self.config.mouse_wheel_scrolls_tabs {
+                let visible_width =
+                    self.dimensions.pixel_width / self.render_metrics.cell_size.width as usize;
+                let fixed_tab_bar_controls = if self.config.use_fancy_tab_bar {
+                    let right_gap = if self.config.show_new_tab_button_in_tab_bar
+                        && self.config.integrated_title_button_alignment
+                            == ::window::IntegratedTitleButtonAlignment::Right
+                    {
+                        4
+                    } else {
+                        0
+                    };
+                    let right_new_tab_extra = if right_gap > 0 { 3 } else { 0 };
+                    4 + right_gap + right_new_tab_extra
+                } else {
+                    0
+                };
+                let scroll_visible_width = visible_width
+                    .saturating_sub(self.tab_bar.fixed_right_len() + fixed_tab_bar_controls);
+                let max_scroll = self
+                    .tab_bar
+                    .scrollable_len()
+                    .saturating_sub(scroll_visible_width);
+                if max_scroll > 0 {
+                    let amount = (n.unsigned_abs() as usize).max(1) * 3;
+                    self.tab_bar_scroll_offset = if n > 0 {
+                        self.tab_bar_scroll_offset.saturating_sub(amount)
+                    } else {
+                        self.tab_bar_scroll_offset
+                            .saturating_add(amount)
+                            .min(max_scroll)
+                    };
+                    self.update_title();
+                    context.invalidate();
+                } else if self.config.mouse_wheel_scrolls_tabs {
                     self.activate_tab_relative(if n < 1 { 1 } else { -1 }, true)
                         .ok();
                 }

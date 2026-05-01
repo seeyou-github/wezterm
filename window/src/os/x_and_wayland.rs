@@ -394,6 +394,14 @@ impl WindowOps for Window {
         }
     }
 
+    fn get_ime_open_status(&self) -> Future<Option<bool>> {
+        Future::result(Ok(None))
+    }
+
+    fn set_ime_open_status(&self, _open: bool) -> Future<()> {
+        Future::result(Ok(()))
+    }
+
     fn get_clipboard(&self, clipboard: Clipboard) -> Future<String> {
         match self {
             Self::X11(x) => x.get_clipboard(clipboard),

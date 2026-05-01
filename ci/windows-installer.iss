@@ -34,7 +34,6 @@ SolidCompression=yes
 WizardStyle=modern
 ; Build 1809 is required for pty support
 MinVersion=10.0.17763
-ChangesEnvironment=true
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -51,6 +50,7 @@ Source: "..\target\release\libEGL.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\libGLESv2.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\conpty.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\OpenConsole.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\wezterm-windows.conf"; DestDir: "{app}"; Flags: onlyifdoesntexist
 Source: "..\target\release\strip-ansi-escapes.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
@@ -61,21 +61,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
-[Registry]
-Root: HKA; Subkey: "Software\Classes\Drive\shell\Open WezTerm here"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\Drive\shell\Open WezTerm here"; ValueName: "icon"; ValueType: string; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletekey;
-Root: HKA; Subkey: "Software\Classes\Drive\shell\Open WezTerm here\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" start --no-auto-connect --cwd ""%V\"""; Flags: uninsdeletekey;
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Open WezTerm here"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Open WezTerm here"; ValueName: "icon"; ValueType: string; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletekey;
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Open WezTerm here\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" start --no-auto-connect --cwd ""%V"; Flags: uninsdeletekey;
-Root: HKA; Subkey: "Software\Classes\Directory\shell\Open WezTerm here"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\Directory\shell\Open WezTerm here"; ValueName: "icon"; ValueType: string; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletekey;
-Root: HKA; Subkey: "Software\Classes\Directory\shell\Open WezTerm here\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" start --no-auto-connect --cwd ""%V\\"""; Flags: uninsdeletekey;
-
 [Code]
 { https://stackoverflow.com/a/46609047/149111 }
-const EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
-
 const IMAGE_FILE_MACHINE_AMD64 = $8664;
 
 function GetMachineTypeAttributes(
@@ -122,79 +109,4 @@ end;
 function InitializeSetupCheckArchitecture(): Boolean;
 begin
   Result := IsSupportedArch();
-end;
-
-procedure EnvAddPath(instlPath: string);
-var
-  Paths: string;
-begin
-  { Retrieve current path (use empty string if entry not exists) }
-  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Paths) then
-    Paths := '';
-
-  if Paths = '' then
-    Paths := instlPath + ';'
-  else
-  begin
-    { Skip if string already found in path }
-    if Pos(';' + Uppercase(instlPath) + ';',  ';' + Uppercase(Paths) + ';') > 0 then exit;
-    if Pos(';' + Uppercase(instlPath) + '\;', ';' + Uppercase(Paths) + ';') > 0 then exit;
-
-    { Append App Install Path to the end of the path variable }
-    if Paths[length(Paths)] <> ';' then
-      Paths := Paths + ';';
-
-    Paths := Paths + instlPath + ';';
-  end;
-
-  { Overwrite (or create if missing) path environment variable }
-  if RegWriteStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Paths)
-  then Log(Format('The [%s] added to PATH: [%s]', [instlPath, Paths]))
-  else Log(Format('Error while adding the [%s] to PATH: [%s]', [instlPath, Paths]));
-end;
-
-procedure EnvRemovePath(instlPath: string);
-var
-  Paths: string;
-  P, Offset, DelimLen: Integer;
-begin
-  { Skip if registry entry not exists }
-  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Paths) then
-    exit;
-
-  { Skip if string not found in path }
-  DelimLen := 1;     { Length(';') }
-  P := Pos(';' + Uppercase(instlPath) + ';', ';' + Uppercase(Paths) + ';');
-  if P = 0 then
-  begin
-    { perhaps instlPath lives in Paths, but terminated by '\;' }
-    DelimLen := 2; { Length('\;') }
-    P := Pos(';' + Uppercase(instlPath) + '\;', ';' + Uppercase(Paths) + ';');
-    if P = 0 then exit;
-  end;
-
-  { Decide where to start string subset in Delete() operation. }
-  if P = 1 then
-    Offset := 0
-  else
-    Offset := 1;
-  { Update path variable }
-  Delete(Paths, P - Offset, Length(instlPath) + DelimLen);
-
-  { Overwrite path environment variable }
-  if RegWriteStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Paths)
-  then Log(Format('The [%s] removed from PATH: [%s]', [instlPath, Paths]))
-  else Log(Format('Error while removing the [%s] from PATH: [%s]', [instlPath, Paths]));
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssPostInstall then
-    EnvAddPath(ExpandConstant('{app}'));
-end;
-
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin
-  if CurUninstallStep = usPostUninstall then
-    EnvRemovePath(ExpandConstant('{app}'));
 end;

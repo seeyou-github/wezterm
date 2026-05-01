@@ -1,4 +1,5 @@
 pub mod connection;
+mod config_file;
 pub mod event;
 mod extra_constants;
 mod keycodes;
@@ -24,24 +25,12 @@ pub fn is_running_in_rdp_session() -> bool {
     use winapi::shared::minwindef::DWORD;
     use winapi::um::processthreadsapi::{GetCurrentProcessId, ProcessIdToSessionId};
     use winapi::um::winuser::{GetSystemMetrics, SM_REMOTESESSION};
-    use winreg::enums::HKEY_LOCAL_MACHINE;
-    use winreg::RegKey;
 
     if unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0 {
         return true;
     }
 
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let terminal_server =
-        match hklm.open_subkey("SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\") {
-            Ok(k) => k,
-            Err(_) => return false,
-        };
-
-    let glass_session_id: DWORD = match terminal_server.get_value("GlassSessionId") {
-        Ok(sess) => sess,
-        Err(_) => return false,
-    };
+    let glass_session_id: DWORD = config_file::get_u32("GlassSessionId", 0);
 
     unsafe {
         let mut current_session = 0;

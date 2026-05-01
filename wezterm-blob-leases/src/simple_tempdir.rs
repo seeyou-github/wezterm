@@ -38,6 +38,10 @@ impl SimpleTempDir {
         })
     }
 
+    pub fn root_path(&self) -> &Path {
+        self.root.path()
+    }
+
     fn path_for_content(&self, content_id: ContentId) -> Result<PathBuf, Error> {
         let path = self.root.path().join(format!("{content_id}"));
         std::fs::create_dir_all(path.parent().unwrap())

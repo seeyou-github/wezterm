@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context as _};
 use config::{create_user_owned_dirs, UnixDomain};
 use promise::spawn::spawn_into_main_thread;
+use std::sync::atomic::{AtomicBool, Ordering};
 use wezterm_uds::UnixListener;
 
 pub struct LocalListener {
@@ -18,9 +19,17 @@ impl LocalListener {
     }
 
     pub fn run(&mut self) {
-        for stream in self.listener.incoming() {
-            match stream {
-                Ok(stream) => {
+        let shutdown = AtomicBool::new(false);
+        self.run_with_shutdown(&shutdown);
+    }
+
+    pub fn run_with_shutdown(&mut self, shutdown: &AtomicBool) {
+        loop {
+            match self.listener.accept() {
+                Ok((stream, _addr)) => {
+                    if shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
                     spawn_into_main_thread(async move {
                         crate::dispatch::process(stream).await.map_err(|e| {
                             log::error!("{:#}", e);
@@ -28,6 +37,10 @@ impl LocalListener {
                         })
                     })
                     .detach();
+                }
+                Err(err) if shutdown.load(Ordering::Acquire) => {
+                    log::trace!("listener shutting down: {}", err);
+                    return;
                 }
                 Err(err) => {
                     log::error!("accept failed: {}", err);

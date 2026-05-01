@@ -7,9 +7,7 @@ use chrono::prelude::*;
 use env_logger::filter::{Builder as FilterBuilder, Filter};
 use log::{Level, LevelFilter, Log, Record};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use termwiz::istty::IsTty;
@@ -132,8 +130,6 @@ impl Rings {
 }
 
 struct Logger {
-    file_name: PathBuf,
-    file: Mutex<Option<BufWriter<File>>>,
     filter: Filter,
     padding: AtomicUsize,
     is_tty: bool,
@@ -151,9 +147,6 @@ impl log::Log for Logger {
     }
 
     fn flush(&self) {
-        if let Some(file) = self.file.lock().unwrap().as_mut() {
-            let _ = file.flush();
-        }
         let _ = std::io::stderr().flush();
     }
 
@@ -205,28 +198,6 @@ impl log::Log for Logger {
                 let _ = stderr.flush();
             }
 
-            let mut file = self.file.lock().unwrap();
-            if file.is_none() {
-                if let Ok(f) = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&self.file_name)
-                {
-                    file.replace(BufWriter::new(f));
-                }
-            }
-            if let Some(file) = file.as_mut() {
-                let _ = writeln!(
-                    file,
-                    "{}  {:6} {:padding$} > {}",
-                    ts,
-                    level,
-                    target,
-                    msg,
-                    padding = padding
-                );
-                let _ = file.flush();
-            }
         }
     }
 }
@@ -274,10 +245,6 @@ fn setup_pretty() -> (LevelFilter, Logger) {
         prune_old_logs();
     }
 
-    let log_file_name = config::RUNTIME_DIR.join(format!("{}-log-{}.txt", base_name, unsafe {
-        libc::getpid()
-    }));
-
     let mut filters = FilterBuilder::new();
     for (module, level) in [
         ("wgpu_core", LevelFilter::Error),
@@ -300,8 +267,6 @@ fn setup_pretty() -> (LevelFilter, Logger) {
     (
         max_level,
         Logger {
-            file_name: log_file_name,
-            file: Mutex::new(None),
             filter,
             padding: AtomicUsize::new(0),
             is_tty: std::io::stderr().is_tty(),

@@ -188,6 +188,23 @@ enum OnlyKeyBindings {
 }
 
 impl super::TermWindow {
+    fn is_overlay_pane(&self, pane: &Arc<dyn Pane>) -> bool {
+        let pane_id = pane.pane_id();
+        self.tab_state.borrow().values().any(|state| {
+            state
+                .overlay
+                .as_ref()
+                .map(|overlay| overlay.pane.pane_id() == pane_id)
+                .unwrap_or(false)
+        }) || self.pane_state.borrow().values().any(|state| {
+            state
+                .overlay
+                .as_ref()
+                .map(|overlay| overlay.pane.pane_id() == pane_id)
+                .unwrap_or(false)
+        })
+    }
+
     fn encode_win32_input(&self, pane: &Arc<dyn Pane>, key: &KeyEvent) -> Option<String> {
         if !self.config.allow_win32_input_mode
             || pane.get_keyboard_encoding() != KeyboardEncoding::Win32
@@ -271,16 +288,39 @@ impl super::TermWindow {
         if is_down {
             if only_key_bindings == OnlyKeyBindings::No {
                 if let Some(modal) = self.get_modal() {
-                    if let Key::Code(term_key) = self.win_key_code_to_termwiz_key_code(keycode) {
-                        match modal.key_down(term_key, raw_modifiers.remove_positional_mods(), self)
-                        {
+                    let mods = raw_modifiers.remove_positional_mods();
+                    match self.win_key_code_to_termwiz_key_code(keycode) {
+                        Key::Code(term_key) => match modal.key_down(term_key, mods, self) {
                             Ok(true) => return true,
                             Ok(false) => {}
                             Err(err) => {
                                 log::error!("Error dispatching key to modal: {err:#}");
                                 return true;
                             }
+                        },
+                        Key::Composed(composed) => {
+                            let mut handled = false;
+                            for c in composed.chars() {
+                                match modal.key_down(
+                                    ::termwiz::input::KeyCode::Char(c),
+                                    mods,
+                                    self,
+                                ) {
+                                    Ok(true) => handled = true,
+                                    Ok(false) => {}
+                                    Err(err) => {
+                                        log::error!(
+                                            "Error dispatching composed key to modal: {err:#}"
+                                        );
+                                        return true;
+                                    }
+                                }
+                            }
+                            if handled {
+                                return true;
+                            }
                         }
+                        Key::None => {}
                     }
                 }
             }
@@ -695,7 +735,25 @@ impl super::TermWindow {
                         );
                     }
 
-                    if window_key.key_is_down {
+                    #[cfg(windows)]
+                    let overlay_text_input = window_key
+                        .win32_uni_char
+                        .filter(|c| !c.is_ascii() && !c.is_ascii_control())
+                        .map(|c| c.to_string());
+                    #[cfg(not(windows))]
+                    let overlay_text_input: Option<String> = None;
+
+                    let overlay_text_input = overlay_text_input.or_else(|| match key {
+                        ::termwiz::input::KeyCode::Char(c) if !c.is_ascii() => Some(c.to_string()),
+                        _ => None,
+                    });
+
+                    if window_key.key_is_down
+                        && self.is_overlay_pane(&pane)
+                        && overlay_text_input.is_some()
+                    {
+                        pane.send_paste(overlay_text_input.as_deref().unwrap())
+                    } else if window_key.key_is_down {
                         pane.key_down(key, modifiers)
                     } else {
                         pane.key_up(key, modifiers)
@@ -735,8 +793,12 @@ impl super::TermWindow {
                 if self.config.debug_key_events {
                     log::info!("send to pane string={:?}", s);
                 }
-                pane.writer().write_all(s.as_bytes()).ok();
-                self.maybe_scroll_to_bottom_for_input(&pane);
+                if self.is_overlay_pane(&pane) {
+                    pane.send_paste(&s).ok();
+                } else {
+                    pane.writer().write_all(s.as_bytes()).ok();
+                    self.maybe_scroll_to_bottom_for_input(&pane);
+                }
                 context.invalidate();
             }
             Key::None => {}

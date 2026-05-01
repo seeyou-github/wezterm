@@ -67,6 +67,12 @@ pub async fn spawn_command_internal(
     } else {
         None
     };
+    let spawn_cwd = spawn
+        .cwd
+        .as_ref()
+        .map(|path| path.to_path_buf())
+        .or_else(|| std::env::current_dir().ok())
+        .and_then(|path| crate::persisted_state::effective_spawn_cwd(Some(&path)));
 
     let cmd_builder = match (
         spawn.args.as_ref(),
@@ -123,7 +129,7 @@ pub async fn spawn_command_internal(
             }
         }
         _ => {
-            let (_tab, pane, window_id) = mux
+            let (tab, pane, window_id) = mux
                 .spawn_tab_or_window(
                     match spawn_where {
                         SpawnWhere::NewWindow => None,
@@ -139,6 +145,7 @@ pub async fn spawn_command_internal(
                 )
                 .await
                 .context("spawn_tab_or_window")?;
+            tab.set_spawn_cwd(spawn_cwd);
 
             // If it was created in this window, it copies our handlers.
             // Otherwise, we'll pick them up when we later respond to

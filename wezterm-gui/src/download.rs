@@ -30,8 +30,8 @@ fn resolve_file_name(name: Option<&str>) -> anyhow::Result<(PathBuf, File)> {
         .and_then(neuter_name)
         .unwrap_or("downloaded-via-wezterm");
 
-    let download_dir = dirs_next::download_dir()
-        .ok_or_else(|| anyhow::anyhow!("unable to locate download directory"))?;
+    let download_dir = config::DATA_DIR.join("Downloads");
+    config::create_user_owned_dirs(&download_dir)?;
 
     for n in 0..20 {
         let candidate = if n == 0 {

@@ -16,6 +16,7 @@ use window::{IntegratedTitleButton, IntegratedTitleButtonAlignment, IntegratedTi
 pub struct TabBarState {
     line: Line,
     items: Vec<TabEntry>,
+    scroll_offset: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,7 +24,11 @@ pub enum TabBarItem {
     None,
     LeftStatus,
     RightStatus,
-    Tab { tab_idx: usize, active: bool },
+    Tab {
+        tab_idx: usize,
+        active: bool,
+        renamed: bool,
+    },
     NewTabButton,
     WindowButton(IntegratedTitleButton),
 }
@@ -32,8 +37,8 @@ pub enum TabBarItem {
 pub struct TabEntry {
     pub item: TabBarItem,
     pub title: Line,
-    x: usize,
-    width: usize,
+    pub x: usize,
+    pub width: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -222,6 +227,7 @@ impl TabBarState {
     pub fn default() -> Self {
         Self {
             line: Line::with_width(1, SEQ_ZERO),
+            scroll_offset: 0,
             items: vec![TabEntry {
                 item: TabBarItem::None,
                 title: Line::from_text(" ", &CellAttributes::blank(), 1, None),
@@ -237,6 +243,47 @@ impl TabBarState {
 
     pub fn items(&self) -> &[TabEntry] {
         &self.items
+    }
+
+    pub fn len(&self) -> usize {
+        self.line.len()
+    }
+
+    pub fn scrollable_len(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.item,
+                    TabBarItem::LeftStatus | TabBarItem::Tab { .. }
+                )
+            })
+            .map(|entry| entry.x + entry.width)
+            .max()
+            .unwrap_or_else(|| self.line.len())
+    }
+
+    pub fn fixed_right_len(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.item,
+                    TabBarItem::NewTabButton | TabBarItem::WindowButton(_)
+                )
+            })
+            .map(|entry| entry.width)
+            .sum()
+    }
+
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    pub fn tab_entry(&self, tab_idx: usize) -> Option<&TabEntry> {
+        self.items
+            .iter()
+            .find(|entry| matches!(entry.item, TabBarItem::Tab { tab_idx: idx, .. } if idx == tab_idx))
     }
 
     fn integrated_title_buttons(
@@ -339,6 +386,7 @@ impl TabBarState {
         config: &ConfigHandle,
         left_status: &str,
         right_status: &str,
+        scroll_offset: usize,
     ) -> Self {
         let colors = colors.cloned().unwrap_or_else(TabBarColors::default);
 
@@ -397,20 +445,6 @@ impl TabBarState {
         } else {
             vec![]
         };
-        let titles_len: usize = tab_titles.iter().map(|s| s.len).sum();
-        let number_of_tabs = tab_titles.len();
-
-        let available_cells =
-            title_width.saturating_sub(number_of_tabs.saturating_sub(1) + new_tab.len());
-        let tab_width_max = if config.use_fancy_tab_bar || available_cells >= titles_len {
-            // We can render each title with its full width
-            usize::max_value()
-        } else {
-            // We need to clamp the length to balance them out
-            available_cells / number_of_tabs
-        }
-        .min(config.tab_max_width);
-
         let mut line = Line::with_width(0, SEQ_ZERO);
 
         let mut x = 0;
@@ -453,7 +487,8 @@ impl TabBarState {
         }
 
         for (tab_idx, tab_title) in tab_titles.iter().enumerate() {
-            let tab_title_len = tab_title.len.min(tab_width_max);
+            let renamed = !tab_info[tab_idx].tab_title.is_empty();
+            let tab_title_len = tab_title.len;
             let active = tab_idx == active_tab_no;
             let hover = !active && is_tab_hover(mouse_x, x, tab_title_len);
 
@@ -489,14 +524,14 @@ impl TabBarState {
             );
 
             let title = tab_line.clone();
-            if tab_line.len() > tab_width_max {
-                tab_line.resize(tab_width_max, SEQ_ZERO);
-            }
-
             let width = tab_line.len();
 
             items.push(TabEntry {
-                item: TabBarItem::Tab { tab_idx, active },
+                item: TabBarItem::Tab {
+                    tab_idx,
+                    active,
+                    renamed,
+                },
                 title,
                 x: tab_start_idx,
                 width,
@@ -603,16 +638,33 @@ impl TabBarState {
             Self::integrated_title_buttons(mouse_x, &mut x, config, &mut items, &mut line, &colors);
         }
 
-        Self { line, items }
+        Self {
+            line,
+            items,
+            scroll_offset,
+        }
     }
 
-    pub fn compute_ui_items(&self, y: usize, cell_height: usize, cell_width: usize) -> Vec<UIItem> {
+    pub fn compute_ui_items(
+        &self,
+        y: usize,
+        cell_height: usize,
+        cell_width: usize,
+        visible_width: usize,
+    ) -> Vec<UIItem> {
         let mut items = vec![];
 
         for entry in self.items.iter() {
+            let entry_start = entry.x.saturating_sub(self.scroll_offset);
+            let hidden = self.scroll_offset.saturating_sub(entry.x);
+            let visible_cells = entry.width.saturating_sub(hidden);
+            if visible_cells == 0 || entry_start >= visible_width {
+                continue;
+            }
+            let visible_cells = visible_cells.min(visible_width.saturating_sub(entry_start));
             items.push(UIItem {
-                x: entry.x * cell_width,
-                width: entry.width * cell_width,
+                x: entry_start * cell_width,
+                width: visible_cells * cell_width,
                 y,
                 height: cell_height,
                 item_type: UIItemType::TabBar(entry.item),

@@ -1391,19 +1391,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
-name = "embed-resource"
-version = "1.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e62abb876c07e4754fae5c14cafa77937841f01740637e17d78dc04352f32a5e"
-dependencies = [
- "cc",
- "rustc_version",
- "toml 0.5.11",
- "vswhom",
- "winreg",
-]
-
-[[package]]
 name = "emojis"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4310,7 +4297,6 @@ dependencies = [
  "shell-words",
  "smol",
  "winapi",
- "winreg",
 ]
 
 [[package]]
@@ -6023,15 +6009,6 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.5.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "toml"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
@@ -6371,26 +6348,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vswhom"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be979b7f07507105799e854203b470ff7c78a1639e330a58f183b5fea574608b"
-dependencies = [
- "libc",
- "vswhom-sys",
-]
-
-[[package]]
-name = "vswhom-sys"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "vtparse"
 version = "0.7.0"
 dependencies = [
@@ -6637,14 +6594,12 @@ name = "wezterm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cc",
  "chrono",
  "clap",
  "clap_complete",
  "clap_complete_fig",
  "codec",
  "config",
- "embed-resource",
  "env-bootstrap",
  "filedescriptor",
  "hostname",
@@ -6878,7 +6833,6 @@ dependencies = [
  "benchmarking",
  "bitflags 1.3.2",
  "bytemuck",
- "cc",
  "chrono",
  "clap",
  "codec",
@@ -6887,7 +6841,6 @@ dependencies = [
  "dhat",
  "dirs-next",
  "downcast-rs",
- "embed-resource",
  "emojis",
  "env-bootstrap",
  "env_logger 0.11.8",
@@ -6949,6 +6902,7 @@ dependencies = [
  "wezterm-ssh",
  "wezterm-term",
  "wezterm-toast-notification",
+ "wezterm-uds",
  "wgpu",
  "winapi",
  "window",
@@ -6980,10 +6934,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async_ossl",
- "cc",
  "clap",
  "config",
- "embed-resource",
  "env-bootstrap",
  "libc",
  "log",
@@ -7422,7 +7374,6 @@ dependencies = [
  "wezterm-input-types",
  "winapi",
  "windows 0.33.0",
- "winreg",
  "x11",
  "xcb",
  "xcb-imdkit",
@@ -7947,15 +7898,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21a0236b59786fed61e2a80582dd500fe61f18b5dca67a4a067d0bc9039339cf"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "winreg"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
-dependencies = [
- "winapi",
 ]
 
 [[package]]

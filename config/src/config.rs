@@ -25,7 +25,7 @@ use crate::{
     default_true, default_win32_acrylic_accent_color, CellWidth, GpuInfo,
     IntegratedTitleButtonColor, KeyMapPreference, LoadedConfig, MouseEventTriggerMods, RgbaColor,
     SerialDomain, SystemBackdrop, WebGpuPowerPreference, CONFIG_DIRS, CONFIG_FILE_OVERRIDE,
-    CONFIG_OVERRIDES, CONFIG_SKIP, HOME_DIR,
+    CONFIG_OVERRIDES, CONFIG_SKIP, APPDATA_CONFIG_DIR, APPDATA_ROOT,
 };
 use anyhow::Context;
 use luahelper::impl_lua_conversion_dynamic;
@@ -925,6 +925,22 @@ impl Config {
         Self::load_with_overrides(&wezterm_dynamic::Value::default())
     }
 
+    fn ensure_portable_config_file() -> anyhow::Result<()> {
+        crate::create_user_owned_dirs(&APPDATA_CONFIG_DIR)
+            .with_context(|| format!("creating {}", APPDATA_CONFIG_DIR.display()))?;
+
+        let config_file = APPDATA_CONFIG_DIR.join(".wezterm.lua");
+        if !config_file.exists() {
+            std::fs::write(
+                &config_file,
+                "-- Auto-generated default WezTerm config\nreturn {}\n",
+            )
+            .with_context(|| format!("creating {}", config_file.display()))?;
+        }
+
+        Ok(())
+    }
+
     /// It is relatively expensive to parse all the ssh config files,
     /// so we defer producing the default list until someone explicitly
     /// asks for it
@@ -1012,25 +1028,12 @@ impl Config {
         // multiple.  In addition, it spawns a lot of subprocesses,
         // so we do this bit "by-hand"
 
-        let mut paths = vec![PathPossibility::optional(HOME_DIR.join(".wezterm.lua"))];
+        let mut paths = vec![
+            PathPossibility::optional(APPDATA_CONFIG_DIR.join(".wezterm.lua")),
+            PathPossibility::optional(APPDATA_CONFIG_DIR.join("wezterm.lua")),
+        ];
         for dir in CONFIG_DIRS.iter() {
             paths.push(PathPossibility::optional(dir.join("wezterm.lua")))
-        }
-
-        if cfg!(windows) {
-            // On Windows, a common use case is to maintain a thumb drive
-            // with a set of portable tools that don't need to be installed
-            // to run on a target system.  In that scenario, the user would
-            // like to run with the config from their thumbdrive because
-            // either the target system won't have any config, or will have
-            // the config of another user.
-            // So we prioritize that here: if there is a config in the same
-            // dir as the executable that will take precedence.
-            if let Ok(exe_name) = std::env::current_exe() {
-                if let Some(exe_dir) = exe_name.parent() {
-                    paths.insert(0, PathPossibility::optional(exe_dir.join("wezterm.lua")));
-                }
-            }
         }
         if let Some(path) = std::env::var_os("WEZTERM_CONFIG_FILE") {
             log::trace!("Note: WEZTERM_CONFIG_FILE is set in the environment");
@@ -1061,11 +1064,15 @@ impl Config {
             }
         }
 
-        // We didn't find (or were asked to skip) a wezterm.lua file, so
-        // update the environment to make it simpler to understand this
-        // state.
-        std::env::remove_var("WEZTERM_CONFIG_FILE");
-        std::env::remove_var("WEZTERM_CONFIG_DIR");
+        // Ensure first run has a usable config file at the portable location.
+        if let Err(err) = Self::ensure_portable_config_file() {
+            log::error!("{:#}", err);
+        }
+
+        // Keep WEZTERM_CONFIG_* anchored in AppData/Config so helpers that
+        // read/write config always target the portable app-local location.
+        std::env::set_var("WEZTERM_CONFIG_FILE", APPDATA_CONFIG_DIR.join(".wezterm.lua"));
+        std::env::set_var("WEZTERM_CONFIG_DIR", &*APPDATA_CONFIG_DIR);
 
         match Self::try_default() {
             Err(err) => LoadedConfig {
@@ -1744,27 +1751,15 @@ fn default_font_size() -> f64 {
 }
 
 pub(crate) fn compute_cache_dir() -> anyhow::Result<PathBuf> {
-    if let Some(runtime) = dirs_next::cache_dir() {
-        return Ok(runtime.join("wezterm"));
-    }
-
-    Ok(crate::HOME_DIR.join(".local/share/wezterm"))
+    Ok(APPDATA_ROOT.join("Cache"))
 }
 
 pub(crate) fn compute_data_dir() -> anyhow::Result<PathBuf> {
-    if let Some(runtime) = dirs_next::data_dir() {
-        return Ok(runtime.join("wezterm"));
-    }
-
-    Ok(crate::HOME_DIR.join(".local/share/wezterm"))
+    Ok(APPDATA_ROOT.to_path_buf())
 }
 
 pub(crate) fn compute_runtime_dir() -> anyhow::Result<PathBuf> {
-    if let Some(runtime) = dirs_next::runtime_dir() {
-        return Ok(runtime.join("wezterm"));
-    }
-
-    Ok(crate::HOME_DIR.join(".local/share/wezterm"))
+    Ok(APPDATA_ROOT.to_path_buf())
 }
 
 pub fn pki_dir() -> anyhow::Result<PathBuf> {

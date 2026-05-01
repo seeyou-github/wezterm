@@ -10,6 +10,9 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Component;
 use std::path::Path;
 
+#[cfg(windows)]
+const WINDOWS_CONFIG_FILE_NAME: &str = "wezterm-windows.conf";
+
 /// Used to deal with Windows having case-insensitive environment variables.
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
@@ -37,6 +40,34 @@ impl EnvEntry {
             k
         }
     }
+}
+
+#[cfg(windows)]
+fn read_windows_config_env(prefix: &str) -> Vec<(OsString, OsString)> {
+    let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.join(WINDOWS_CONFIG_FILE_NAME)))
+    else {
+        return vec![];
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            let name = key.trim().strip_prefix(prefix)?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name.into(), value.trim().into()))
+        })
+        .collect()
 }
 
 #[cfg(unix)]
@@ -103,93 +134,46 @@ fn get_base_env() -> BTreeMap<OsString, EnvEntry> {
 
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStringExt;
-        use winapi::um::processenv::ExpandEnvironmentStringsW;
-        use winreg::enums::{RegType, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-        use winreg::types::FromRegValue;
-        use winreg::{RegKey, RegValue};
-
-        fn reg_value_to_string(value: &RegValue) -> anyhow::Result<OsString> {
-            match value.vtype {
-                RegType::REG_EXPAND_SZ => {
-                    let src = unsafe {
-                        std::slice::from_raw_parts(
-                            value.bytes.as_ptr() as *const u16,
-                            value.bytes.len() / 2,
-                        )
-                    };
-                    let size =
-                        unsafe { ExpandEnvironmentStringsW(src.as_ptr(), std::ptr::null_mut(), 0) };
-                    let mut buf = vec![0u16; size as usize + 1];
-                    unsafe {
-                        ExpandEnvironmentStringsW(src.as_ptr(), buf.as_mut_ptr(), buf.len() as u32)
-                    };
-
-                    let mut buf = buf.as_slice();
-                    while let Some(0) = buf.last() {
-                        buf = &buf[0..buf.len() - 1];
-                    }
-                    Ok(OsString::from_wide(buf))
-                }
-                _ => Ok(OsString::from_reg_value(value)?),
+        for (name, value) in read_windows_config_env("SysEnv.") {
+            if name.to_string_lossy().eq_ignore_ascii_case("username") {
+                continue;
             }
+            log::trace!("adding configured SYS env: {:?} {:?}", name, value);
+            env.insert(
+                EnvEntry::map_key(name.clone()),
+                EnvEntry {
+                    is_from_base_env: true,
+                    preferred_key: name,
+                    value,
+                },
+            );
         }
 
-        if let Ok(sys_env) = RegKey::predef(HKEY_LOCAL_MACHINE)
-            .open_subkey("System\\CurrentControlSet\\Control\\Session Manager\\Environment")
-        {
-            for res in sys_env.enum_values() {
-                if let Ok((name, value)) = res {
-                    if name.to_ascii_lowercase() == "username" {
-                        continue;
+        for (name, value) in read_windows_config_env("Env.") {
+            let value = if name.to_string_lossy().eq_ignore_ascii_case("path") {
+                match env.get(&EnvEntry::map_key(name.clone())) {
+                    Some(entry) => {
+                        let mut result = OsString::new();
+                        result.push(&entry.value);
+                        result.push(";");
+                        result.push(&value);
+                        result
                     }
-                    if let Ok(value) = reg_value_to_string(&value) {
-                        log::trace!("adding SYS env: {:?} {:?}", name, value);
-                        env.insert(
-                            EnvEntry::map_key(name.clone().into()),
-                            EnvEntry {
-                                is_from_base_env: true,
-                                preferred_key: name.into(),
-                                value,
-                            },
-                        );
-                    }
+                    None => value,
                 }
-            }
-        }
+            } else {
+                value
+            };
 
-        if let Ok(sys_env) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Environment") {
-            for res in sys_env.enum_values() {
-                if let Ok((name, value)) = res {
-                    if let Ok(value) = reg_value_to_string(&value) {
-                        // Merge the system and user paths together
-                        let value = if name.to_ascii_lowercase() == "path" {
-                            match env.get(&EnvEntry::map_key(name.clone().into())) {
-                                Some(entry) => {
-                                    let mut result = OsString::new();
-                                    result.push(&entry.value);
-                                    result.push(";");
-                                    result.push(&value);
-                                    result
-                                }
-                                None => value,
-                            }
-                        } else {
-                            value
-                        };
-
-                        log::trace!("adding USER env: {:?} {:?}", name, value);
-                        env.insert(
-                            EnvEntry::map_key(name.clone().into()),
-                            EnvEntry {
-                                is_from_base_env: true,
-                                preferred_key: name.into(),
-                                value,
-                            },
-                        );
-                    }
-                }
-            }
+            log::trace!("adding configured USER env: {:?} {:?}", name, value);
+            env.insert(
+                EnvEntry::map_key(name.clone()),
+                EnvEntry {
+                    is_from_base_env: true,
+                    preferred_key: name,
+                    value,
+                },
+            );
         }
     }
 

@@ -336,6 +336,22 @@ pub fn resolve_gui_sock_path(class_name: &str) -> anyhow::Result<PathBuf> {
     NameHolder::resolve(class_name)
 }
 
+pub fn gui_sock_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        config::CACHE_DIR.clone()
+    }
+
+    #[cfg(not(windows))]
+    {
+        config::RUNTIME_DIR.clone()
+    }
+}
+
+pub fn gui_sock_path_for_pid(pid: u32) -> PathBuf {
+    gui_sock_dir().join(format!("gui-sock-{pid}"))
+}
+
 /// This function returns a list of the gui-sock- paths in
 /// the runtime dir.  These represent the locally running
 /// instances of wezterm-gui.
@@ -368,7 +384,7 @@ pub fn discover_gui_socks() -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(dir) = std::fs::read_dir(&*config::RUNTIME_DIR) {
+    if let Ok(dir) = std::fs::read_dir(gui_sock_dir()) {
         for entry in dir {
             if let Ok(entry) = entry {
                 if let Some(name) = entry.file_name().to_str() {

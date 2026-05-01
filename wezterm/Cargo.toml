@@ -55,7 +55,3 @@ features = [
     "synchapi",
 ]
 workspace = true
-
-[target.'cfg(windows)'.build-dependencies]
-cc.workspace = true
-embed-resource.workspace = true

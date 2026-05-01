@@ -6,7 +6,6 @@ use http_req::uri::Uri;
 use mux::connui::ConnectionUI;
 use serde::*;
 use std::convert::TryFrom;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use termwiz::cell::{Hyperlink, Underline};
@@ -69,25 +68,7 @@ lazy_static::lazy_static! {
 }
 
 pub fn load_last_release_info_and_set_banner() {
-    if !configuration().check_for_updates {
-        return;
-    }
-
-    let update_file_name = config::DATA_DIR.join("check_update");
-    if let Ok(data) = std::fs::read(update_file_name) {
-        let latest: Release = match serde_json::from_slice(&data) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-
-        let current = wezterm_version();
-        let force_ui = std::env::var_os("WEZTERM_ALWAYS_SHOW_UPDATE_UI").is_some();
-        if latest.tag_name.as_str() <= current && !force_ui {
-            return;
-        }
-
-        set_banner_from_release_info(&latest);
-    }
+    // Hard-disabled by local policy.
 }
 
 fn set_banner_from_release_info(latest: &Release) {
@@ -169,7 +150,8 @@ fn update_checker() {
 
     std::thread::sleep(if force_ui { initial_interval } else { delay });
 
-    let my_sock = config::RUNTIME_DIR.join(format!("gui-sock-{}", unsafe { libc::getpid() }));
+    let my_sock =
+        wezterm_client::discovery::gui_sock_path_for_pid(unsafe { libc::getpid() as u32 });
 
     loop {
         // Figure out which other wezterm-guis are running.
@@ -223,13 +205,6 @@ fn update_checker() {
 }
 
 pub fn start_update_checker() {
-    static CHECKER_STARTED: AtomicBool = AtomicBool::new(false);
-    if let Ok(false) =
-        CHECKER_STARTED.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-    {
-        std::thread::Builder::new()
-            .name("update_checker".into())
-            .spawn(update_checker)
-            .expect("failed to spawn update checker thread");
-    }
+    // Hard-disabled by local policy.
+    return;
 }

@@ -155,6 +155,7 @@ pub enum TermWindowNotif {
 pub enum UIItemType {
     TabBar(TabBarItem),
     CloseTab(usize),
+    CloseCurrentTab,
     AboveScrollThumb,
     ScrollThumb,
     BelowScrollThumb,
@@ -213,6 +214,7 @@ pub struct TabInformation {
     pub tab_index: usize,
     pub is_active: bool,
     pub is_last_active: bool,
+    pub is_pinned: bool,
     pub active_pane: Option<PaneInformation>,
     pub window_id: MuxWindowId,
     pub tab_title: String,
@@ -224,6 +226,7 @@ impl UserData for TabInformation {
         fields.add_field_method_get("tab_index", |_, this| Ok(this.tab_index));
         fields.add_field_method_get("is_active", |_, this| Ok(this.is_active));
         fields.add_field_method_get("is_last_active", |_, this| Ok(this.is_last_active));
+        fields.add_field_method_get("is_pinned", |_, this| Ok(this.is_pinned));
         fields.add_field_method_get("active_pane", |_, this| {
             if let Some(pane) = &this.active_pane {
                 Ok(Some(pane.clone()))
@@ -391,6 +394,7 @@ pub struct TermWindow {
     show_scroll_bar: bool,
     tab_bar: TabBarState,
     fancy_tab_bar: Option<box_model::ComputedElement>,
+    tab_bar_scroll_offset: usize,
     pub right_status: String,
     pub left_status: String,
     last_ui_item: Option<UIItem>,
@@ -480,8 +484,19 @@ impl TermWindow {
 
     fn close_requested(&mut self, window: &Window) {
         let mux = Mux::get();
+        let save_window_close_session = || {
+            let result = if mux.iter_windows().len() > 1 {
+                crate::persisted_state::save_current_session_excluding_window(self.mux_window_id)
+            } else {
+                crate::persisted_state::save_current_session()
+            };
+            if let Err(err) = result {
+                log::warn!("failed to save renamed tab session before close: {err:#}");
+            }
+        };
         match self.config.window_close_confirmation {
             WindowCloseConfirmation::NeverPrompt => {
+                save_window_close_session();
                 // Immediately kill the tabs and allow the window to close
                 mux.kill_window(self.mux_window_id);
                 window.close();
@@ -491,6 +506,7 @@ impl TermWindow {
                 let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
                     Some(tab) => tab,
                     None => {
+                        save_window_close_session();
                         mux.kill_window(self.mux_window_id);
                         window.close();
                         front_end().forget_known_window(window);
@@ -504,6 +520,7 @@ impl TermWindow {
                     .get_window(mux_window_id)
                     .map_or(false, |w| w.can_close_without_prompting());
                 if can_close {
+                    save_window_close_session();
                     mux.kill_window(self.mux_window_id);
                     window.close();
                     front_end().forget_known_window(window);
@@ -712,6 +729,7 @@ impl TermWindow {
             show_scroll_bar: config.enable_scroll_bar,
             tab_bar: TabBarState::default(),
             fancy_tab_bar: None,
+            tab_bar_scroll_offset: 0,
             right_status: String::new(),
             left_status: String::new(),
             last_mouse_coords: (0, -1),
@@ -889,7 +907,6 @@ impl TermWindow {
             myself.emit_status_event();
         }
 
-        crate::update::start_update_checker();
         front_end().record_known_window(window, mux_window_id);
 
         Ok(())
@@ -1114,6 +1131,7 @@ impl TermWindow {
             TermWindowNotif::InvalidateShapeCache => {
                 self.shape_generation += 1;
                 self.shape_cache.borrow_mut().clear();
+                self.invalidate_fancy_tab_bar();
                 self.invalidate_modal();
                 window.invalidate();
             }
@@ -1285,6 +1303,7 @@ impl TermWindow {
                     self.mux_pane_output_event(pane_id);
                 }
                 MuxNotification::WindowInvalidated(_) => {
+                    self.invalidate_fancy_tab_bar();
                     window.invalidate();
                     self.update_title_post_status();
                 }
@@ -1306,6 +1325,8 @@ impl TermWindow {
                     self.update_title_post_status();
                 }
                 MuxNotification::TabTitleChanged { .. } => {
+                    self.invalidate_fancy_tab_bar();
+                    window.invalidate();
                     self.update_title_post_status();
                 }
                 MuxNotification::PaneAdded(_)
@@ -1988,20 +2009,69 @@ impl TermWindow {
             None => false,
         };
 
-        let new_tab_bar = TabBarState::new(
-            self.dimensions.pixel_width / self.render_metrics.cell_size.width as usize,
-            if hovering_in_tab_bar {
-                Some(self.last_mouse_coords.0)
-            } else {
-                None
-            },
+        let visible_tab_bar_width =
+            self.dimensions.pixel_width / self.render_metrics.cell_size.width as usize;
+        let mouse_x = if hovering_in_tab_bar {
+            Some(
+                self.last_mouse_coords
+                    .0
+                    .saturating_add(self.tab_bar_scroll_offset),
+            )
+        } else {
+            None
+        };
+
+        let mut new_tab_bar = TabBarState::new(
+            visible_tab_bar_width,
+            mouse_x,
             &tabs,
             &panes,
             self.config.resolved_palette.tab_bar.as_ref(),
             &self.config,
             &self.left_status,
             &self.right_status,
+            self.tab_bar_scroll_offset,
         );
+
+        let fixed_tab_bar_controls = if self.config.use_fancy_tab_bar {
+            let right_gap = if self.config.show_new_tab_button_in_tab_bar
+                && self.config.integrated_title_button_alignment
+                    == ::window::IntegratedTitleButtonAlignment::Right
+            {
+                4
+            } else {
+                0
+            };
+            let right_new_tab_extra = if right_gap > 0 { 3 } else { 0 };
+            4 + right_gap + right_new_tab_extra
+        } else {
+            0
+        };
+        let scroll_visible_width = visible_tab_bar_width
+            .saturating_sub(new_tab_bar.fixed_right_len() + fixed_tab_bar_controls);
+        let max_scroll = new_tab_bar
+            .scrollable_len()
+            .saturating_sub(scroll_visible_width);
+        let scroll_offset = self.tab_bar_scroll_offset.min(max_scroll);
+        if scroll_offset != self.tab_bar_scroll_offset {
+            self.tab_bar_scroll_offset = scroll_offset;
+            let mouse_x = if hovering_in_tab_bar {
+                Some(self.last_mouse_coords.0.saturating_add(scroll_offset))
+            } else {
+                None
+            };
+            new_tab_bar = TabBarState::new(
+                visible_tab_bar_width,
+                mouse_x,
+                &tabs,
+                &panes,
+                self.config.resolved_palette.tab_bar.as_ref(),
+                &self.config,
+                &self.left_status,
+                &self.right_status,
+                self.tab_bar_scroll_offset,
+            );
+        }
         if new_tab_bar != self.tab_bar {
             self.tab_bar = new_tab_bar;
             self.invalidate_fancy_tab_bar();
@@ -2382,6 +2452,29 @@ impl TermWindow {
             alphabet: None,
         };
         self.show_launcher_impl(args, active_tab_idx);
+    }
+
+    fn show_tab_context_menu(&mut self, tab_idx: usize) {
+        let mux = Mux::get();
+        let tab_id = match mux
+            .get_window(self.mux_window_id)
+            .and_then(|window| window.get_by_idx(tab_idx).map(|tab| tab.tab_id()))
+        {
+            Some(tab_id) => tab_id,
+            None => return,
+        };
+        let tab = match mux.get_tab(tab_id) {
+            Some(tab) => tab,
+            None => return,
+        };
+        let mux_window_id = self.mux_window_id;
+        let window = self.window.clone().unwrap();
+
+        let (overlay, future) = start_overlay(self, &tab, move |_tab_id, term| {
+            crate::overlay::tab_menu::show_tab_menu(term, tab_id, mux_window_id, window)
+        });
+        self.assign_overlay(tab_id, overlay);
+        promise::spawn::spawn(future).detach();
     }
 
     fn show_launcher(&mut self) {
@@ -2800,6 +2893,9 @@ impl TermWindow {
 
                 match config.window_close_confirmation {
                     WindowCloseConfirmation::NeverPrompt => {
+                        if let Err(err) = crate::persisted_state::save_current_session() {
+                            log::warn!("failed to save renamed tab session before quit: {err:#}");
+                        }
                         let con = Connection::get().expect("call on gui thread");
                         con.terminate_message_loop();
                     }
@@ -3249,6 +3345,20 @@ impl TermWindow {
         drop(mux_window);
 
         let tab_id = tab.tab_id();
+        let next_active_idx = mux.get_window(mux_window_id).and_then(|window| {
+            let idx = window.idx_by_id(tab_id)?;
+            let active_idx = window.get_active_idx();
+            let len = window.len();
+            if idx != active_idx || len <= 1 {
+                None
+            } else {
+                Some(if active_idx + 1 < len {
+                    active_idx
+                } else {
+                    active_idx.saturating_sub(1)
+                })
+            }
+        });
         if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
             if self.activate_tab(tab_idx as isize).is_err() {
                 return;
@@ -3262,11 +3372,35 @@ impl TermWindow {
             promise::spawn::spawn(future).detach();
         } else {
             mux.remove_tab(tab_id);
+            if let Some(target_idx) = next_active_idx {
+                if let Some(mut window) = mux.get_window_mut(mux_window_id) {
+                    if !window.is_empty() {
+                        let len = window.len();
+                        window.set_active_without_saving(target_idx.min(len - 1));
+                    }
+                }
+            }
+            if let Err(err) = crate::persisted_state::save_current_session() {
+                log::warn!("failed to save renamed tab session after tab close: {err:#}");
+            }
         }
     }
 
     fn close_current_tab(&mut self, confirm: bool) {
         let mux = Mux::get();
+        let next_active_idx = mux.get_window(self.mux_window_id).and_then(|window| {
+            let len = window.len();
+            if len <= 1 {
+                None
+            } else {
+                let active_idx = window.get_active_idx();
+                Some(if active_idx + 1 < len {
+                    active_idx
+                } else {
+                    active_idx.saturating_sub(1)
+                })
+            }
+        });
         let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
             Some(tab) => tab,
             None => return,
@@ -3282,6 +3416,17 @@ impl TermWindow {
             promise::spawn::spawn(future).detach();
         } else {
             mux.remove_tab(tab_id);
+            if let Some(target_idx) = next_active_idx {
+                if let Some(mut window) = mux.get_window_mut(mux_window_id) {
+                    if !window.is_empty() {
+                        let len = window.len();
+                        window.set_active_without_saving(target_idx.min(len - 1));
+                    }
+                }
+            }
+            if let Err(err) = crate::persisted_state::save_current_session() {
+                log::warn!("failed to save renamed tab session after tab close: {err:#}");
+            }
         }
     }
 
@@ -3476,6 +3621,7 @@ impl TermWindow {
                         .get_last_active_idx()
                         .map(|last_active| last_active == idx)
                         .unwrap_or(false),
+                    is_pinned: tab.is_pinned(),
                     window_id: self.mux_window_id,
                     tab_title: tab.get_title(),
                     active_pane: panes

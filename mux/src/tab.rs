@@ -45,6 +45,8 @@ struct TabInner {
     active: usize,
     zoomed: Option<Arc<dyn Pane>>,
     title: String,
+    spawn_cwd: Option<String>,
+    pinned: bool,
     recency: Recency,
 }
 
@@ -533,6 +535,25 @@ impl Tab {
         }
     }
 
+    pub fn get_spawn_cwd(&self) -> Option<String> {
+        self.inner.lock().spawn_cwd.clone()
+    }
+
+    pub fn set_spawn_cwd(&self, cwd: Option<String>) {
+        self.inner.lock().spawn_cwd = cwd;
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.inner.lock().pinned
+    }
+
+    pub fn set_pinned(&self, pinned: bool) {
+        let mut inner = self.inner.lock();
+        if inner.pinned != pinned {
+            inner.pinned = pinned;
+        }
+    }
+
     /// Called by the multiplexer client when building a local tab to
     /// mirror a remote tab.  The supplied `root` is the information
     /// about our counterpart in the the remote server.
@@ -763,6 +784,8 @@ impl TabInner {
             active: 0,
             zoomed: None,
             title: String::new(),
+            spawn_cwd: None,
+            pinned: false,
             recency: Recency::default(),
         }
     }

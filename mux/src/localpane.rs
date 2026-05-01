@@ -448,14 +448,16 @@ impl Pane for LocalPane {
 
     fn get_title(&self) -> String {
         let title = self.terminal.lock().get_title().to_string();
-        // If the title is the default pane title, then try to spice
-        // things up a bit by returning the process basename instead
-        if title == "wezterm" {
+        if should_use_cwd_as_title(&title) {
+            if let Some(name) = self
+                .get_current_working_dir(CachePolicy::AllowStale)
+                .and_then(cwd_label_from_url)
+            {
+                return name;
+            }
+
             if let Some(proc_name) = self.get_foreground_process_name(CachePolicy::AllowStale) {
-                let proc_name = std::path::Path::new(&proc_name);
-                if let Some(name) = proc_name.file_name() {
-                    return name.to_string_lossy().to_string();
-                }
+                return sanitize_process_title(&proc_name);
             }
         }
 
@@ -822,6 +824,52 @@ impl Pane for LocalPane {
         }
 
         Ok(results)
+    }
+}
+
+fn should_use_cwd_as_title(title: &str) -> bool {
+    if title == "wezterm" {
+        return true;
+    }
+
+    let trimmed = title.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.ends_with(".exe")
+        || lower.ends_with(".cmd")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".com")
+}
+
+fn cwd_label_from_url(url: url::Url) -> Option<String> {
+    let path = url.to_file_path().ok()?;
+    let label = path
+        .file_name()
+        .or_else(|| path.components().rev().find_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        }))?;
+    let label = label.to_string_lossy().trim().to_string();
+    if label.is_empty() {
+        None
+    } else {
+        Some(label)
+    }
+}
+
+fn sanitize_process_title(title: &str) -> String {
+    let path = std::path::Path::new(title.trim());
+    let name = path.file_name().unwrap_or_else(|| path.as_os_str());
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .unwrap_or(name)
+        .to_string_lossy()
+        .trim()
+        .to_string();
+
+    if stem.is_empty() {
+        title.trim().to_string()
+    } else {
+        stem
     }
 }
 

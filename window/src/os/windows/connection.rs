@@ -28,8 +28,6 @@ use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
     DISPLAYCONFIG_TARGET_DEVICE_NAME,
 };
-use winreg::enums::HKEY_CURRENT_USER;
-use winreg::RegKey;
 
 pub struct Connection {
     event_handle: HANDLE,
@@ -38,17 +36,10 @@ pub struct Connection {
 }
 
 pub(crate) fn get_appearance() -> Appearance {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    match hkcu.open_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize") {
-        Ok(theme) => {
-            let light = theme.get_value::<u32, _>("AppsUseLightTheme").unwrap_or(1) == 1;
-            if light {
-                Appearance::Light
-            } else {
-                Appearance::Dark
-            }
-        }
-        _ => Appearance::Light,
+    if super::config_file::get_bool("AppsUseLightTheme", true) {
+        Appearance::Light
+    } else {
+        Appearance::Dark
     }
 }
 

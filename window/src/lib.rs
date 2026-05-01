@@ -313,6 +313,16 @@ pub trait WindowOps {
     /// the platform specific input method editor
     fn set_text_cursor_position(&self, _cursor: Rect) {}
 
+    /// Returns whether the platform IME is currently open for this window.
+    fn get_ime_open_status(&self) -> Future<Option<bool>> {
+        Future::result(Ok(None))
+    }
+
+    /// Requests that the platform IME be opened or closed for this window.
+    fn set_ime_open_status(&self, _open: bool) -> Future<()> {
+        Future::result(Ok(()))
+    }
+
     /// Initiate textual transfer from the clipboard
     fn get_clipboard(&self, clipboard: Clipboard) -> Future<String>;
 

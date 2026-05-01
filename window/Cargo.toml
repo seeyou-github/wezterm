@@ -65,8 +65,6 @@ windows = { workspace=true, features = [
     "UI_ViewManagement",
     "Win32_Devices_Display",
 ]}
-winreg.workspace = true
-
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 dirs-next.workspace = true
 filedescriptor.workspace = true

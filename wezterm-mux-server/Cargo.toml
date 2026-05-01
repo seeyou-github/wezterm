@@ -29,7 +29,3 @@ wezterm-term.workspace = true
 
 [target."cfg(windows)".dependencies]
 winapi = { workspace=true, features = [ "winuser" ]}
-
-[target.'cfg(windows)'.build-dependencies]
-embed-resource.workspace = true
-cc.workspace = true

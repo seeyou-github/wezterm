@@ -227,7 +227,7 @@ pub fn make_lua_context(config_file: &Path) -> anyhow::Result<Lua> {
             array.insert(1, format!("{}/?/init.lua", path.display()));
         }
 
-        prefix_path(&mut path_array, &crate::HOME_DIR.join(".wezterm"));
+        prefix_path(&mut path_array, &crate::APPDATA_ROOT.join("Modules"));
         for dir in crate::CONFIG_DIRS.iter() {
             prefix_path(&mut path_array, dir);
         }
@@ -325,7 +325,7 @@ end
 
         wezterm_mod.set("target_triple", crate::wezterm_target_triple())?;
         wezterm_mod.set("version", crate::wezterm_version())?;
-        wezterm_mod.set("home_dir", crate::HOME_DIR.to_str())?;
+        wezterm_mod.set("home_dir", crate::APPDATA_ROOT.to_str())?;
         wezterm_mod.set(
             "running_under_wsl",
             lua.create_function(|_, ()| Ok(crate::running_under_wsl()))?,

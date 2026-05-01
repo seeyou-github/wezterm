@@ -29,10 +29,6 @@ dhat-ad-hoc = ["dhat"]  # if you are doing ad hoc profiling
 [build-dependencies]
 anyhow.workspace = true
 
-[target.'cfg(windows)'.build-dependencies]
-cc.workspace = true
-embed-resource.workspace = true
-
 [dependencies]
 anyhow.workspace = true
 bitflags.workspace = true
@@ -103,6 +99,7 @@ wezterm-open-url.workspace = true
 wezterm-ssh.workspace = true
 wezterm-term.workspace = true
 wezterm-toast-notification.workspace = true
+wezterm-uds.workspace = true
 wgpu.workspace = true
 window-funcs.workspace = true
 window.workspace = true

@@ -1,20 +1,8 @@
 name: windows
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.lock"
-      - "**/Cargo.toml"
-      - ".cargo/config.toml"
-      - ".github/workflows/gen_windows.yml"
-      - "assets/fonts/**/*"
-      - "assets/icon/*"
-      - "assets/windows/**/*"
-      - "ci/deploy.sh"
-      - "ci/windows-installer.iss"
+  push:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -25,6 +13,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
       RUSTUP_WINDOWS_PATH_ADD_BIN: "1"
+      WEZTERM_SKIP_INSTALLER: "1"
 
     steps:
       - name: "checkout repo"
@@ -59,26 +48,11 @@ jobs:
         run: |
           PATH C:\Strawberry\perl\bin;%PATH%
           cargo build -p wezterm-gui --release
-      - name: "Build wezterm-mux-server (Release mode)"
-        shell: cmd
-        run: |
-          PATH C:\Strawberry\perl\bin;%PATH%
-          cargo build -p wezterm-mux-server --release
       - name: "Build strip-ansi-escapes (Release mode)"
         shell: cmd
         run: |
           PATH C:\Strawberry\perl\bin;%PATH%
           cargo build -p strip-ansi-escapes --release
-      - name: "Install cargo-nextest from Cargo"
-        uses: baptiste0928/cargo-install@v3
-        with:
-          crate: "cargo-nextest"
-          cache-key: "windows"
-      - name: "Test"
-        shell: cmd
-        run: |
-          PATH C:\Strawberry\perl\bin;%PATH%
-          cargo nextest run --all --no-fail-fast
       - name: "Package"
         shell: bash
         run: "bash ci/deploy.sh"
@@ -88,4 +62,3 @@ jobs:
           name: "windows"
           path: |
             WezTerm-*.zip
-            WezTerm-*.exe

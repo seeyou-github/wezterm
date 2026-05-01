@@ -67,6 +67,8 @@ type ErrorCallback = fn(&str);
 
 lazy_static! {
     pub static ref HOME_DIR: PathBuf = dirs_next::home_dir().expect("can't find HOME dir");
+    pub static ref APPDATA_ROOT: PathBuf = appdata_root();
+    pub static ref APPDATA_CONFIG_DIR: PathBuf = APPDATA_ROOT.join("Config");
     pub static ref CONFIG_DIRS: Vec<PathBuf> = config_dirs();
     pub static ref RUNTIME_DIR: PathBuf = compute_runtime_dir().unwrap();
     pub static ref DATA_DIR: PathBuf = compute_data_dir().unwrap();
@@ -382,23 +384,17 @@ pub fn create_user_owned_dirs(p: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn xdg_config_home() -> PathBuf {
-    match std::env::var_os("XDG_CONFIG_HOME").map(|s| PathBuf::from(s).join("wezterm")) {
-        Some(p) => p,
-        None => HOME_DIR.join(".config").join("wezterm"),
+fn appdata_root() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            return exe_dir.join("AppData");
+        }
     }
+    HOME_DIR.join("AppData")
 }
 
 fn config_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    dirs.push(xdg_config_home());
-
-    #[cfg(unix)]
-    if let Some(d) = std::env::var_os("XDG_CONFIG_DIRS") {
-        dirs.extend(std::env::split_paths(&d).map(|s| PathBuf::from(s).join("wezterm")));
-    }
-
-    dirs
+    vec![APPDATA_CONFIG_DIR.clone()]
 }
 
 pub fn set_config_file_override(path: &Path) {

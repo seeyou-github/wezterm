@@ -10,6 +10,7 @@ use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
 use wezterm_font::LoadedFont;
 use wezterm_term::color::{ColorAttribute, ColorPalette};
+use window::color::LinearRgba;
 use window::{IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle};
 
 const X_BUTTON: &[Poly] = &[
@@ -49,6 +50,8 @@ const PLUS_BUTTON: &[Poly] = &[
         style: PolyStyle::Outline,
     },
 ];
+
+const FIXED_TAB_BUTTON_SCALE: f32 = 1.5;
 
 impl crate::TermWindow {
     pub fn invalidate_fancy_tab_bar(&mut self) {
@@ -135,24 +138,28 @@ impl crate::TermWindow {
                         line_width: metrics.underline_height.max(2),
                         poly: SizedPoly {
                             poly: PLUS_BUTTON,
-                            width: Dimension::Pixels(metrics.cell_size.height as f32 / 2.),
-                            height: Dimension::Pixels(metrics.cell_size.height as f32 / 2.),
+                            width: Dimension::Pixels(
+                                metrics.cell_size.height as f32 / 2. * FIXED_TAB_BUTTON_SCALE,
+                            ),
+                            height: Dimension::Pixels(
+                                metrics.cell_size.height as f32 / 2. * FIXED_TAB_BUTTON_SCALE,
+                            ),
                         },
                     },
                 )
                 .vertical_align(VerticalAlign::Middle)
                 .item_type(UIItemType::TabBar(item.item.clone()))
                 .margin(BoxDimension {
-                    left: Dimension::Cells(0.5),
+                    left: Dimension::Cells(0.75),
                     right: Dimension::Cells(0.),
-                    top: Dimension::Cells(0.2),
+                    top: Dimension::Cells(0.3),
                     bottom: Dimension::Cells(0.),
                 })
                 .padding(BoxDimension {
-                    left: Dimension::Cells(0.5),
-                    right: Dimension::Cells(0.5),
-                    top: Dimension::Cells(0.2),
-                    bottom: Dimension::Cells(0.25),
+                    left: Dimension::Cells(0.75),
+                    right: Dimension::Cells(0.75),
+                    top: Dimension::Cells(0.3),
+                    bottom: Dimension::Cells(0.375),
                 })
                 .border(BoxDimension::new(Dimension::Pixels(1.)))
                 .colors(ElementColors {
@@ -296,16 +303,12 @@ impl crate::TermWindow {
             }
         };
 
-        let num_tabs: f32 = items
-            .iter()
-            .map(|item| match item.item {
-                TabBarItem::NewTabButton | TabBarItem::Tab { .. } => 1.,
-                _ => 0.,
-            })
-            .sum();
-        let max_tab_width = ((self.dimensions.pixel_width as f32 / num_tabs)
-            - (1.5 * metrics.cell_size.width as f32))
-            .max(0.);
+        let scroll_offset_px =
+            self.tab_bar.scroll_offset() as f32 * metrics.cell_size.width as f32;
+        let fixed_left_close_cells = 4.0;
+        let right_gap_cells = 4usize;
+        let sticky_new_tab_button =
+            self.config.integrated_title_button_alignment == IntegratedTitleButtonAlignment::Right;
 
         // Reserve space for the native titlebar buttons
         if self
@@ -325,37 +328,58 @@ impl crate::TermWindow {
             );
         }
 
+        let mut sticky_new_tab = None;
+        let mut right_status_eles = vec![];
+        let mut right_button_eles = vec![];
+
         for item in items {
             match item.item {
                 TabBarItem::LeftStatus => left_status.push(item_to_elem(item)),
-                TabBarItem::None | TabBarItem::RightStatus => right_eles.push(item_to_elem(item)),
+                TabBarItem::None | TabBarItem::RightStatus => {
+                    right_status_eles.push(item_to_elem(item))
+                }
+                TabBarItem::NewTabButton => {
+                    if sticky_new_tab_button {
+                        sticky_new_tab = Some(item_to_elem(item));
+                    } else {
+                        left_eles.push(item_to_elem(item));
+                    }
+                }
                 TabBarItem::WindowButton(_) => {
                     if self.config.integrated_title_button_alignment
                         == IntegratedTitleButtonAlignment::Left
                     {
                         left_eles.push(item_to_elem(item))
                     } else {
-                        right_eles.push(item_to_elem(item))
+                        right_button_eles.push(item_to_elem(item))
                     }
                 }
-                TabBarItem::Tab { tab_idx, active } => {
+                TabBarItem::Tab { renamed, .. } => {
                     let mut elem = item_to_elem(item);
-                    elem.max_width = Some(Dimension::Pixels(max_tab_width));
+                    let _ = renamed;
+                    // Leave a small amount of slack so the final glyph
+                    // isn't clipped by exact-fit shaping bounds.
+                    elem.min_width = Some(Dimension::Cells(item.title.len() as f32 + 1.0));
                     elem.content = match elem.content {
                         ElementContent::Text(_) => unreachable!(),
                         ElementContent::Poly { .. } => unreachable!(),
-                        ElementContent::Children(mut kids) => {
-                            if self.config.show_close_tab_button_in_tabs {
-                                kids.push(make_x_button(&font, &metrics, &colors, tab_idx, active));
-                            }
-                            ElementContent::Children(kids)
-                        }
+                        ElementContent::Children(kids) => ElementContent::Children(kids),
                     };
                     left_eles.push(elem);
                 }
-                _ => left_eles.push(item_to_elem(item)),
             }
         }
+
+        right_eles.extend(right_status_eles);
+        if let Some(elem) = sticky_new_tab {
+            right_eles.push(elem);
+            right_eles.push(
+                Element::new(&font, ElementContent::Text("".to_string()))
+                    .min_width(Some(Dimension::Cells(right_gap_cells as f32)))
+                    .colors(bar_colors.clone()),
+            );
+        }
+        right_eles.extend(right_button_eles);
 
         let mut children = vec![];
 
@@ -387,7 +411,7 @@ impl crate::TermWindow {
                 Dimension::Pixels(0.0)
             }
         } else {
-            Dimension::Cells(0.5)
+            Dimension::Cells(0.5 + fixed_left_close_cells)
         };
 
         children.push(
@@ -405,15 +429,18 @@ impl crate::TermWindow {
         children.push(
             Element::new(&font, ElementContent::Children(right_eles))
                 .colors(bar_colors.clone())
-                .float(Float::Right),
+                .float(Float::Right)
+                .zindex(2),
         );
 
         let content = ElementContent::Children(children);
+        let layout_width = (scroll_offset_px + self.dimensions.pixel_width as f32)
+            .max(self.dimensions.pixel_width as f32);
 
         let tabs = Element::new(&font, content)
             .display(DisplayType::Block)
             .item_type(UIItemType::TabBar(TabBarItem::None))
-            .min_width(Some(Dimension::Pixels(self.dimensions.pixel_width as f32)))
+            .min_width(Some(Dimension::Pixels(layout_width)))
             .min_height(Some(Dimension::Pixels(tab_bar_height)))
             .vertical_align(VerticalAlign::Bottom)
             .colors(bar_colors);
@@ -429,13 +456,13 @@ impl crate::TermWindow {
                 },
                 width: DimensionContext {
                     dpi: self.dimensions.dpi as f32,
-                    pixel_max: self.dimensions.pixel_width as f32,
+                    pixel_max: layout_width,
                     pixel_cell: metrics.cell_size.width as f32,
                 },
                 bounds: euclid::rect(
                     border.left.get() as f32,
                     0.,
-                    self.dimensions.pixel_width as f32 - (border.left + border.right).get() as f32,
+                    layout_width - (border.left + border.right).get() as f32,
                     tab_bar_height,
                 ),
                 metrics: &metrics,
@@ -446,7 +473,7 @@ impl crate::TermWindow {
         )?;
 
         computed.translate(euclid::vec2(
-            0.,
+            -scroll_offset_px,
             if self.config.tab_bar_at_bottom {
                 self.dimensions.pixel_height as f32
                     - (computed.bounds.height() + border.bottom.get() as f32)
@@ -454,6 +481,43 @@ impl crate::TermWindow {
                 border.top.get() as f32
             },
         ));
+
+        let mut close_button = self.compute_element(
+            &LayoutContext {
+                height: DimensionContext {
+                    dpi: self.dimensions.dpi as f32,
+                    pixel_max: self.dimensions.pixel_height as f32,
+                    pixel_cell: metrics.cell_size.height as f32,
+                },
+                width: DimensionContext {
+                    dpi: self.dimensions.dpi as f32,
+                    pixel_max: self.dimensions.pixel_width as f32,
+                    pixel_cell: metrics.cell_size.width as f32,
+                },
+                bounds: euclid::rect(
+                    border.left.get() as f32,
+                    0.,
+                    self.dimensions.pixel_width as f32,
+                    tab_bar_height,
+                ),
+                metrics: &metrics,
+                gl_state: self.render_state.as_ref().unwrap(),
+                zindex: 20,
+            },
+            &make_close_current_button(&font, &metrics, &colors),
+        )?;
+        close_button.translate(euclid::vec2(
+            0.,
+            if self.config.tab_bar_at_bottom {
+                self.dimensions.pixel_height as f32
+                    - (close_button.bounds.height() + border.bottom.get() as f32)
+            } else {
+                border.top.get() as f32
+            },
+        ));
+        if let ComputedElementContent::Children(kids) = &mut computed.content {
+            kids.push(close_button);
+        }
 
         Ok(computed)
     }
@@ -471,21 +535,24 @@ impl crate::TermWindow {
     }
 }
 
-fn make_x_button(
+fn make_close_current_button(
     font: &Rc<LoadedFont>,
     metrics: &RenderMetrics,
     colors: &TabBarColors,
-    tab_idx: usize,
-    active: bool,
 ) -> Element {
+    let close_fg = LinearRgba(1.0, 0.0, 0.0, 1.0);
     Element::new(
         &font,
         ElementContent::Poly {
             line_width: metrics.underline_height.max(2),
             poly: SizedPoly {
                 poly: X_BUTTON,
-                width: Dimension::Pixels(metrics.cell_size.height as f32 / 2.),
-                height: Dimension::Pixels(metrics.cell_size.height as f32 / 2.),
+                width: Dimension::Pixels(
+                    metrics.cell_size.height as f32 / 2. * FIXED_TAB_BUTTON_SCALE,
+                ),
+                height: Dimension::Pixels(
+                    metrics.cell_size.height as f32 / 2. * FIXED_TAB_BUTTON_SCALE,
+                ),
             },
         },
     )
@@ -493,38 +560,32 @@ fn make_x_button(
     // top of the rest of the tab contents
     .zindex(1)
     .vertical_align(VerticalAlign::Middle)
-    .float(Float::Right)
-    .item_type(UIItemType::CloseTab(tab_idx))
+    .item_type(UIItemType::CloseCurrentTab)
+    .colors({
+        let new_tab = colors.new_tab();
+        ElementColors {
+            border: BorderColor::default(),
+            bg: new_tab.bg_color.to_linear().into(),
+            text: close_fg.into(),
+        }
+    })
     .hover_colors({
         let inactive_tab_hover = colors.inactive_tab_hover();
-        let active_tab = colors.active_tab();
 
         Some(ElementColors {
             border: BorderColor::default(),
-            bg: (if active {
-                inactive_tab_hover.bg_color
-            } else {
-                active_tab.bg_color
-            })
-            .to_linear()
-            .into(),
-            text: (if active {
-                inactive_tab_hover.fg_color
-            } else {
-                active_tab.fg_color
-            })
-            .to_linear()
-            .into(),
+            bg: inactive_tab_hover.bg_color.to_linear().into(),
+            text: close_fg.into(),
         })
     })
     .padding(BoxDimension {
-        left: Dimension::Cells(0.25),
-        right: Dimension::Cells(0.25),
-        top: Dimension::Cells(0.25),
-        bottom: Dimension::Cells(0.25),
+        left: Dimension::Cells(1.125),
+        right: Dimension::Cells(1.125),
+        top: Dimension::Cells(0.375),
+        bottom: Dimension::Cells(0.375),
     })
     .margin(BoxDimension {
-        left: Dimension::Cells(0.5),
+        left: Dimension::Cells(0.375),
         right: Dimension::Cells(0.),
         top: Dimension::Cells(0.),
         bottom: Dimension::Cells(0.),
